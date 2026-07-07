@@ -1,0 +1,611 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+//  ICT Structure + Gamma Edge Alert System (ES Futures) — v1.1
+//
+//  Detects Order Blocks (OBs) and Fair Value Gaps (FVGs), tracks their
+//  mitigation status in real time, and fires long/short alerts when price
+//  interacts with unmitigated structure — with a higher-priority Tier A
+//  signal when the setup occurs at a user-defined gamma/GEX edge level.
+//
+//  All detection, mitigation, and signal logic evaluates ONLY on confirmed
+//  candle close (barstate.isconfirmed). No security() calls. No repainting.
+//
+//  Levels are entered manually pre-market (SpotGamma /ES-mapped). Levels
+//  within edge_proximity_ticks of each other merge into one cluster zone
+//  that inherits the best (lowest) tier of its members.
+// ═══════════════════════════════════════════════════════════════════════════
+indicator("ICT Structure + Gamma Edge Alerts (ES)", "ICT+GEX Edge",
+     overlay = true, max_boxes_count = 500, max_lines_count = 100, max_labels_count = 100)
+
+// ─────────────────────────── Inputs: Daily Levels ──────────────────────────
+GRP_L = "Daily Levels"
+vol_trigger   = input.float(0.0, "Volatility Trigger", minval = 0, step = 0.25, group = GRP_L, tooltip = "0 = disabled (all levels)")
+zero_gamma    = input.float(0.0, "Zero Gamma",         minval = 0, step = 0.25, group = GRP_L)
+call_wall     = input.float(0.0, "Call Wall",          minval = 0, step = 0.25, group = GRP_L)
+put_wall      = input.float(0.0, "Put Wall",           minval = 0, step = 0.25, group = GRP_L)
+combo_1       = input.float(0.0, "Combo 1",            minval = 0, step = 0.25, group = GRP_L)
+combo_2       = input.float(0.0, "Combo 2",            minval = 0, step = 0.25, group = GRP_L)
+combo_3       = input.float(0.0, "Combo 3",            minval = 0, step = 0.25, group = GRP_L)
+combo_4       = input.float(0.0, "Combo 4",            minval = 0, step = 0.25, group = GRP_L)
+large_gamma_1 = input.float(0.0, "Large Gamma 1",      minval = 0, step = 0.25, group = GRP_L)
+large_gamma_2 = input.float(0.0, "Large Gamma 2",      minval = 0, step = 0.25, group = GRP_L)
+large_gamma_3 = input.float(0.0, "Large Gamma 3",      minval = 0, step = 0.25, group = GRP_L)
+large_gamma_4 = input.float(0.0, "Large Gamma 4",      minval = 0, step = 0.25, group = GRP_L)
+custom_1      = input.float(0.0, "Custom 1",           minval = 0, step = 0.25, group = GRP_L)
+custom_2      = input.float(0.0, "Custom 2",           minval = 0, step = 0.25, group = GRP_L)
+
+// Expected Move — computed levels (Tier 2, yellow dashed). Disabled if either input is 0.
+em_ref_price     = input.float(0.0, "EM Reference Price",       minval = 0, step = 0.25, group = GRP_L, tooltip = "SpotGamma reference / prior close in /ES terms. 0 = EM disabled")
+sg_1day_move_pct = input.float(0.0, "SG Implied 1-Day Move (%)", minval = 0, step = 0.01, group = GRP_L, tooltip = "e.g. 0.85 for ±0.85%. 0 = EM disabled")
+
+gamma_regime         = input.string("Positive", "Gamma Regime", options = ["Positive", "Negative", "Deep Negative (< -2)"], group = GRP_L)
+edge_proximity_ticks = input.int(8, "Edge Proximity (ticks)", minval = 1, group = GRP_L, tooltip = "Distance to a level to count as 'at an edge', and the level-clustering distance")
+
+// ─────────────────────── Inputs: Context (display only) ────────────────────
+GRP_C = "Context"
+gamma_tilt        = input.float(0.0, "Gamma Tilt",            step = 0.01, group = GRP_C, tooltip = "SG Gamma Tilt. 0 = hidden. Display only — no effect on signals")
+tilt_strong       = input.float(1.5, "Tilt Strong Threshold", step = 0.1,  group = GRP_C, tooltip = "Positive regime + tilt >= this => PIN CONVICTION: HIGH")
+risk_reversal_25d = input.float(0.0, "25Δ Risk Reversal",     step = 0.01, group = GRP_C, tooltip = "0 = hidden. Display only — excluded from all intraday gating")
+
+// ──────────────────────────── Inputs: Structure ────────────────────────────
+GRP_S = "Structure"
+swing_lookback        = input.int(5, "Swing Lookback", minval = 1, group = GRP_S, tooltip = "Pivot strength (bars left/right) for swing high/low detection")
+displacement_atr_mult = input.float(1.5, "Displacement ATR Mult", minval = 0.1, step = 0.1, group = GRP_S, tooltip = "Candle body >= mult x ATR(14) qualifies as displacement")
+fvg_min_ticks         = input.int(4, "FVG Min Size (ticks)", minval = 0, group = GRP_S)
+ob_max_age_bars       = input.int(500, "Max Zone Age (bars)", minval = 10, group = GRP_S)
+mitigation_mode       = input.string("50%", "Mitigation Mode", options = ["Touch", "50%"], group = GRP_S)
+ob_zone_mode          = input.string("Full candle", "OB Zone Mode", options = ["Full candle", "Open-to-extreme"], group = GRP_S, tooltip = "Open-to-extreme = open-to-low for bullish OBs, open-to-high for bearish OBs")
+
+// ───────────────────────────── Inputs: Signals ─────────────────────────────
+GRP_G = "Signals"
+require_displacement   = input.bool(true,  "Require Displacement", group = GRP_G)
+show_mid_range_signals = input.bool(false, "Show Mid-Range (Tier B) Signals", group = GRP_G, tooltip = "OFF = only edge-confluent Tier A signals fire")
+
+// ─────────────────────────────── Constants ─────────────────────────────────
+int MAX_ZONES      = 50   // hard cap per zone type (4 types x 50 = 200 boxes < 500 limit)
+int MAX_SIG_LABELS = 60
+
+color COL_FVG_BULL_BG = color.new(color.green,  80)
+color COL_FVG_BULL_BR = color.new(color.green,  30)
+color COL_FVG_BEAR_BG = color.new(color.red,    80)
+color COL_FVG_BEAR_BR = color.new(color.red,    30)
+color COL_OB_BULL_BG  = color.new(color.blue,   80)
+color COL_OB_BULL_BR  = color.new(color.blue,   20)
+color COL_OB_BEAR_BG  = color.new(color.purple, 80)
+color COL_OB_BEAR_BR  = color.new(color.purple, 20)
+color COL_MIT_BG      = color.new(color.gray,   90)
+color COL_MIT_BR      = color.new(color.gray,   60)
+color COL_VIOL_BG     = color.new(#2f2f2f,      80)
+color COL_VIOL_BR     = color.new(#2f2f2f,      45)
+
+// ──────────────────────────────── Types ────────────────────────────────────
+type Zone
+    box   bx
+    float top
+    float bottom
+    int   birth
+    bool  bull
+    bool  isOB
+    bool  mitigated = false
+    bool  violated  = false
+
+// Best-signal accumulator for one bar/direction (lowest score wins)
+type Sig
+    bool   found  = false
+    bool   isA    = false
+    int    tier   = 9
+    string lvl    = "none"
+    bool   multi  = false
+    string suffix = ""
+    float  zTop   = na
+    float  zBot   = na
+    string zType  = ""
+    float  score  = 1e12
+
+type ZStats
+    int    bullUp = 0
+    int    bullDn = 0
+    int    bearUp = 0
+    int    bearDn = 0
+    float  upDist = na
+    string upTxt  = "-"
+    float  dnDist = na
+    string dnTxt  = "-"
+
+// ───────────────────────────── Global state ────────────────────────────────
+float prox    = edge_proximity_ticks * syminfo.mintick
+float minGap  = fvg_min_ticks * syminfo.mintick
+float atr14   = ta.atr(14)
+float atrSafe = nz(atr14, 1e9)   // huge until ATR is defined so displacement can't qualify early
+float body    = math.abs(close - open)
+bool  dispUp  = close > open and body >= displacement_atr_mult * atrSafe
+bool  dispDn  = close < open and body >= displacement_atr_mult * atrSafe
+
+float ph = ta.pivothigh(high, swing_lookback, swing_lookback)
+float pl = ta.pivotlow(low,  swing_lookback, swing_lookback)
+var float lastSwingHigh = na
+var float lastSwingLow  = na
+
+bool  haveVT = vol_trigger > 0
+bool  haveZG = zero_gamma > 0
+float bandLo = math.min(vol_trigger, zero_gamma)
+float bandHi = math.max(vol_trigger, zero_gamma)
+bool  inFlip = haveVT and haveZG and close >= bandLo and close <= bandHi
+bool  isNeg     = gamma_regime == "Negative"
+bool  isDeepNeg = gamma_regime == "Deep Negative (< -2)"
+
+// Expected Move computed levels
+bool  haveEM = em_ref_price > 0 and sg_1day_move_pct > 0
+float emHigh = haveEM ? em_ref_price * (1 + sg_1day_move_pct / 100) : na
+float emLow  = haveEM ? em_ref_price * (1 - sg_1day_move_pct / 100) : na
+
+// Zone arrays (active + consumed, capped at MAX_ZONES each)
+var array<Zone> bullFVG = array.new<Zone>()
+var array<Zone> bearFVG = array.new<Zone>()
+var array<Zone> bullOB  = array.new<Zone>()
+var array<Zone> bearOB  = array.new<Zone>()
+
+var array<label> sigLabels = array.new<label>()
+var array<label> lvlLabels = array.new<label>()
+
+// Level tables (built once on the first bar — inputs are static per run)
+var array<float>  lvPrice = array.new<float>()
+var array<string> lvFull  = array.new<string>()
+var array<string> lvShort = array.new<string>()
+var array<int>    lvTier  = array.new<int>()
+var array<color>  lvColor = array.new<color>()
+var array<string> lvStyle = array.new<string>()
+var array<int>    lvWidth = array.new<int>()
+
+// Cluster tables (built once from the sorted level tables)
+var array<float>  clMin  = array.new<float>()
+var array<float>  clMax  = array.new<float>()
+var array<int>    clTier = array.new<int>()
+var array<string> clName = array.new<string>()   // full name if single, short names joined if cluster
+var array<bool>   clMulti = array.new<bool>()
+var array<bool>   clHasPW = array.new<bool>()
+
+// ─────────────────────────────── Functions ─────────────────────────────────
+f_addLevel(float price, string full, string shrt, int tier, color col, string sty, int wid) =>
+    if price > 0
+        array.push(lvPrice, price)
+        array.push(lvFull,  full)
+        array.push(lvShort, shrt)
+        array.push(lvTier,  tier)
+        array.push(lvColor, col)
+        array.push(lvStyle, sty)
+        array.push(lvWidth, wid)
+
+f_swapLevels(int a, int b) =>
+    float tPrice = array.get(lvPrice, a)
+    array.set(lvPrice, a, array.get(lvPrice, b))
+    array.set(lvPrice, b, tPrice)
+    string tFull = array.get(lvFull, a)
+    array.set(lvFull, a, array.get(lvFull, b))
+    array.set(lvFull, b, tFull)
+    string tShort = array.get(lvShort, a)
+    array.set(lvShort, a, array.get(lvShort, b))
+    array.set(lvShort, b, tShort)
+    int tTier = array.get(lvTier, a)
+    array.set(lvTier, a, array.get(lvTier, b))
+    array.set(lvTier, b, tTier)
+    color tCol = array.get(lvColor, a)
+    array.set(lvColor, a, array.get(lvColor, b))
+    array.set(lvColor, b, tCol)
+    string tSty = array.get(lvStyle, a)
+    array.set(lvStyle, a, array.get(lvStyle, b))
+    array.set(lvStyle, b, tSty)
+    int tWid = array.get(lvWidth, a)
+    array.set(lvWidth, a, array.get(lvWidth, b))
+    array.set(lvWidth, b, tWid)
+
+// Returns [bestClusterIdx, bestTier]; idx = -1 when no cluster is near.
+// Near = zone overlaps the cluster range expanded by prox, OR the signal
+// bar's relevant extreme (low for longs / high for shorts) is within prox.
+f_nearCluster(float zTop, float zBot, float extreme) =>
+    int bestI = -1
+    int bestT = 9
+    if array.size(clMin) > 0
+        for i = 0 to array.size(clMin) - 1
+            float lo = array.get(clMin, i) - prox
+            float hi = array.get(clMax, i) + prox
+            bool zoneNear = zTop >= lo and zBot <= hi
+            bool barNear  = extreme >= lo and extreme <= hi
+            if (zoneNear or barNear) and array.get(clTier, i) < bestT
+                bestI := i
+                bestT := array.get(clTier, i)
+    [bestI, bestT]
+
+// Regime filter. Returns [allowed, labelSuffix].
+// "Counter-trend" in the Negative regime is read as: longs below Zero Gamma
+// and shorts above the Vol Trigger (mirrors the Deep Negative directional rule,
+// applied to Tier B only).
+f_regime(bool isLong, bool isA, int tier, bool hasPW) =>
+    bool ok = true
+    string sfx = ""
+    bool belowZG = haveZG and close < zero_gamma
+    bool aboveVT = haveVT and close > vol_trigger
+    if isNeg
+        if isA
+            sfx := " (NEG — fragile)" + (inFlip ? " (FLIP ZONE)" : "")
+        else if (isLong and belowZG) or (not isLong and aboveVT)
+            ok := false
+    else if isDeepNeg
+        // Put Wall exception: a long AT the Put Wall cluster prints in any regime
+        if isLong and isA and hasPW
+            sfx := " (PW fade — max caution)"
+        else
+            if (isLong and belowZG) or (not isLong and aboveVT)
+                ok := false
+            else if inFlip and (not isA or tier != 1)
+                ok := false    // between ZG and VT only Tier-1-level signals allowed
+            if ok
+                sfx := " (DEEP NEG — trend only)"
+    [ok, sfx]
+
+// Scan one zone array for a valid signal this bar; keep the best in `s`.
+// Zone displacement requirement is enforced at creation time when
+// require_displacement is on, so every tracked zone already qualifies.
+f_scan(array<Zone> zs, Sig s, bool isLong) =>
+    if array.size(zs) > 0
+        for i = 0 to array.size(zs) - 1
+            Zone z = array.get(zs, i)
+            if z.mitigated or z.violated or bar_index <= z.birth
+                continue
+            // Sweep-into-zone then close-confirmation
+            bool trig = isLong ?
+                 (z.bull     and low  <= z.top    and close > z.top    and close > open) :
+                 (not z.bull and high >= z.bottom and close < z.bottom and close < open)
+            if not trig
+                continue
+            [ci, ct] = f_nearCluster(z.top, z.bottom, isLong ? low : high)
+            bool isA = ci >= 0
+            if not isA and not show_mid_range_signals
+                continue
+            bool hasPW = false
+            if isA
+                hasPW := array.get(clHasPW, ci)
+            int tier = isA ? ct : 9
+            [ok, sfx] = f_regime(isLong, isA, tier, hasPW)
+            if not ok
+                continue
+            // Prefer Tier A, then best (lowest) level tier, then nearest zone
+            float score = (isA ? tier * 1000.0 : 100000.0) + math.abs(close - (isLong ? z.top : z.bottom))
+            if score < s.score
+                s.found  := true
+                s.isA    := isA
+                s.tier   := tier
+                s.suffix := sfx
+                s.zTop   := z.top
+                s.zBot   := z.bottom
+                s.zType  := z.isOB ? "OB" : "FVG"
+                s.score  := score
+                if isA
+                    s.lvl   := array.get(clName, ci)
+                    s.multi := array.get(clMulti, ci)
+                else
+                    s.lvl   := "none"
+                    s.multi := false
+
+f_addZone(array<Zone> zs, Zone z) =>
+    array.push(zs, z)
+    if array.size(zs) > MAX_ZONES
+        Zone old = array.shift(zs)
+        box.delete(old.bx)
+
+// Mitigation / violation / aging — confirmed bars only, creation bar excluded
+f_updateZones(array<Zone> zs) =>
+    if array.size(zs) > 0
+        for i = array.size(zs) - 1 to 0
+            Zone z = array.get(zs, i)
+            if bar_index - z.birth > ob_max_age_bars
+                box.delete(z.bx)
+                array.remove(zs, i)
+                continue
+            if z.violated or bar_index <= z.birth
+                continue
+            float mid = math.avg(z.top, z.bottom)
+            bool violNow = z.bull ? close < z.bottom : close > z.top
+            bool mitNow  = mitigation_mode == "Touch" ?
+                 (low <= z.top and high >= z.bottom) :
+                 (z.bull ? low <= mid : high >= mid)
+            if violNow
+                z.violated := true
+                box.set_bgcolor(z.bx, COL_VIOL_BG)
+                box.set_border_color(z.bx, COL_VIOL_BR)
+                box.set_right(z.bx, bar_index)
+                box.set_text(z.bx, "X")
+                box.set_text_color(z.bx, color.new(color.gray, 30))
+                box.set_text_size(z.bx, size.small)
+            else if not z.mitigated and mitNow
+                z.mitigated := true
+                box.set_bgcolor(z.bx, COL_MIT_BG)
+                box.set_border_color(z.bx, COL_MIT_BR)
+                box.set_right(z.bx, bar_index)
+            else if not z.mitigated
+                box.set_right(z.bx, bar_index)
+
+f_capSigLabel(label lb) =>
+    array.push(sigLabels, lb)
+    if array.size(sigLabels) > MAX_SIG_LABELS
+        label.delete(array.shift(sigLabels))
+
+f_accStats(array<Zone> zs, ZStats st) =>
+    if array.size(zs) > 0
+        for i = 0 to array.size(zs) - 1
+            Zone z = array.get(zs, i)
+            if z.mitigated or z.violated
+                continue
+            if z.bottom > close
+                if z.bull
+                    st.bullUp += 1
+                else
+                    st.bearUp += 1
+                float d = z.bottom - close
+                if na(st.upDist) or d < st.upDist
+                    st.upDist := d
+                    st.upTxt  := (z.bull ? "Bull " : "Bear ") + (z.isOB ? "OB" : "FVG")
+            else if z.top < close
+                if z.bull
+                    st.bullDn += 1
+                else
+                    st.bearDn += 1
+                float d = close - z.top
+                if na(st.dnDist) or d < st.dnDist
+                    st.dnDist := d
+                    st.dnTxt  := (z.bull ? "Bull " : "Bear ") + (z.isOB ? "OB" : "FVG")
+
+// ─────────────── Level + cluster construction (once, first bar) ────────────
+if barstate.isfirst
+    f_addLevel(vol_trigger,   "Vol Trigger",   "VT",  1, color.orange, line.style_solid,  2)
+    f_addLevel(zero_gamma,    "Zero Gamma",    "ZG",  1, color.white,  line.style_solid,  2)
+    f_addLevel(call_wall,     "Call Wall",     "CW",  1, color.green,  line.style_solid,  2)
+    f_addLevel(put_wall,      "Put Wall",      "PW",  1, color.red,    line.style_solid,  2)
+    f_addLevel(combo_1,       "Combo 1",       "C1",  1, color.teal,   line.style_solid,  1)
+    f_addLevel(combo_2,       "Combo 2",       "C2",  2, color.teal,   line.style_dashed, 1)
+    f_addLevel(combo_3,       "Combo 3",       "C3",  2, color.teal,   line.style_dashed, 1)
+    f_addLevel(combo_4,       "Combo 4",       "C4",  3, color.teal,   line.style_dotted, 1)
+    f_addLevel(large_gamma_1, "Large Gamma 1", "LG1", 2, color.gray,   line.style_dashed, 1)
+    f_addLevel(large_gamma_2, "Large Gamma 2", "LG2", 2, color.gray,   line.style_dashed, 1)
+    f_addLevel(large_gamma_3, "Large Gamma 3", "LG3", 3, color.gray,   line.style_dotted, 1)
+    f_addLevel(large_gamma_4, "Large Gamma 4", "LG4", 3, color.gray,   line.style_dotted, 1)
+    f_addLevel(custom_1,      "Custom 1",      "X1",  3, color.gray,   line.style_dotted, 1)
+    f_addLevel(custom_2,      "Custom 2",      "X2",  3, color.gray,   line.style_dotted, 1)
+    // Expected Move — computed, Tier 2, yellow dashed, full edge levels
+    if haveEM
+        f_addLevel(emHigh, "EM High", "EMH", 2, color.yellow, line.style_dashed, 1)
+        f_addLevel(emLow,  "EM Low",  "EML", 2, color.yellow, line.style_dashed, 1)
+
+    // Sort levels by price (ascending) so clustering is a single pass
+    int n = array.size(lvPrice)
+    if n > 1
+        for i = 0 to n - 2
+            for j = 0 to n - 2 - i
+                if array.get(lvPrice, j) > array.get(lvPrice, j + 1)
+                    f_swapLevels(j, j + 1)
+
+    // Cluster: chain levels whose gap to the cluster's running max <= prox.
+    // Cluster inherits the best (lowest) member tier; name lists all members.
+    int i = 0
+    while i < n
+        float cMin  = array.get(lvPrice, i)
+        float cMax  = cMin
+        int   cTier = array.get(lvTier, i)
+        string names = array.get(lvShort, i)
+        string fullN = array.get(lvFull, i)
+        bool  cPW   = array.get(lvShort, i) == "PW"
+        int   cnt   = 1
+        int   j     = i + 1
+        while j < n and array.get(lvPrice, j) - cMax <= prox
+            cMax  := array.get(lvPrice, j)
+            cTier := math.min(cTier, array.get(lvTier, j))
+            names += "+" + array.get(lvShort, j)
+            cPW   := cPW or array.get(lvShort, j) == "PW"
+            cnt   += 1
+            j     += 1
+        array.push(clMin,  cMin)
+        array.push(clMax,  cMax)
+        array.push(clTier, cTier)
+        array.push(clName, cnt == 1 ? fullN : names)
+        array.push(clMulti, cnt > 1)
+        array.push(clHasPW, cPW)
+        i := j
+
+    // Draw one horizontal line per level, styled per spec
+    if n > 0
+        for k = 0 to n - 1
+            line.new(bar_index, array.get(lvPrice, k), bar_index + 1, array.get(lvPrice, k),
+                 extend = extend.both, color = array.get(lvColor, k),
+                 style = array.get(lvStyle, k), width = array.get(lvWidth, k))
+
+// ─────────────────────── Detection (confirmed bars only) ───────────────────
+bool bullFvgNow = false
+bool bearFvgNow = false
+Sig sL = Sig.new()
+Sig sS = Sig.new()
+
+if barstate.isconfirmed
+    // Swing tracking (pivot confirms swing_lookback bars after the extreme — no repaint)
+    if not na(ph)
+        lastSwingHigh := ph
+    if not na(pl)
+        lastSwingLow := pl
+
+    // ── FVG detection: three-candle pattern, candle[1] direction + displacement ──
+    bullFvgNow := low > high[2] and (low - high[2]) >= minGap and close[1] > open[1] and
+         (not require_displacement or math.abs(close[1] - open[1]) >= displacement_atr_mult * nz(atr14[1], 1e9))
+    bearFvgNow := high < low[2] and (low[2] - high) >= minGap and close[1] < open[1] and
+         (not require_displacement or math.abs(close[1] - open[1]) >= displacement_atr_mult * nz(atr14[1], 1e9))
+
+    if bullFvgNow
+        b = box.new(bar_index - 2, low, bar_index, high[2],
+             border_color = COL_FVG_BULL_BR, bgcolor = COL_FVG_BULL_BG, border_width = 1)
+        f_addZone(bullFVG, Zone.new(b, low, high[2], bar_index, true, false))
+    if bearFvgNow
+        b = box.new(bar_index - 2, low[2], bar_index, high,
+             border_color = COL_FVG_BEAR_BR, bgcolor = COL_FVG_BEAR_BG, border_width = 1)
+        f_addZone(bearFVG, Zone.new(b, low[2], high, bar_index, false, false))
+
+    // ── Order Block detection ──
+    // Bullish OB: last down-close candle (within 3 bars back) immediately before
+    // a displacement bar up that breaks a prior swing high or creates a bullish FVG.
+    var int lastBullObBar = -1
+    var int lastBearObBar = -1
+    bool brokeHigh = not na(lastSwingHigh) and high > lastSwingHigh
+    bool brokeLow  = not na(lastSwingLow)  and low  < lastSwingLow
+
+    if dispUp and (brokeHigh or bullFvgNow)
+        int k = -1
+        for o = 1 to 3
+            if close[o] < open[o]
+                k := o
+                break
+        if k > 0 and bar_index - k != lastBullObBar
+            lastBullObBar := bar_index - k
+            float zTop = ob_zone_mode == "Full candle" ? high[k] : open[k]
+            float zBot = low[k]
+            b = box.new(bar_index - k, zTop, bar_index, zBot,
+                 border_color = COL_OB_BULL_BR, bgcolor = COL_OB_BULL_BG, border_width = 1)
+            f_addZone(bullOB, Zone.new(b, zTop, zBot, bar_index, true, true))
+
+    if dispDn and (brokeLow or bearFvgNow)
+        int k = -1
+        for o = 1 to 3
+            if close[o] > open[o]
+                k := o
+                break
+        if k > 0 and bar_index - k != lastBearObBar
+            lastBearObBar := bar_index - k
+            float zTop = high[k]
+            float zBot = ob_zone_mode == "Full candle" ? low[k] : open[k]
+            b = box.new(bar_index - k, zTop, bar_index, zBot,
+                 border_color = COL_OB_BEAR_BR, bgcolor = COL_OB_BEAR_BG, border_width = 1)
+            f_addZone(bearOB, Zone.new(b, zTop, zBot, bar_index, false, true))
+
+    // ── Signals: evaluate against pre-bar zone state, BEFORE mitigation update ──
+    f_scan(bullFVG, sL, true)
+    f_scan(bullOB,  sL, true)
+    f_scan(bearFVG, sS, false)
+    f_scan(bearOB,  sS, false)
+
+    // ── Mitigation / violation / aging ──
+    f_updateZones(bullFVG)
+    f_updateZones(bearFVG)
+    f_updateZones(bullOB)
+    f_updateZones(bearOB)
+
+// ─────────────────────────── Signal outputs ────────────────────────────────
+bool tierALong  = sL.found and sL.isA
+bool tierBLong  = sL.found and not sL.isA
+bool tierAShort = sS.found and sS.isA
+bool tierBShort = sS.found and not sS.isA
+
+// Triangle size scales with cluster tier (T1 large / T2 medium / T3 small)
+plotshape(tierALong and sL.tier == 1,  "Tier A Long T1",  shape.triangleup,   location.belowbar, color.lime,    size = size.large)
+plotshape(tierALong and sL.tier == 2,  "Tier A Long T2",  shape.triangleup,   location.belowbar, color.lime,    size = size.normal)
+plotshape(tierALong and sL.tier >= 3,  "Tier A Long T3",  shape.triangleup,   location.belowbar, color.lime,    size = size.small)
+plotshape(tierAShort and sS.tier == 1, "Tier A Short T1", shape.triangledown, location.abovebar, color.fuchsia, size = size.large)
+plotshape(tierAShort and sS.tier == 2, "Tier A Short T2", shape.triangledown, location.abovebar, color.fuchsia, size = size.normal)
+plotshape(tierAShort and sS.tier >= 3, "Tier A Short T3", shape.triangledown, location.abovebar, color.fuchsia, size = size.small)
+// Tier B: small hollow triangles, no label
+plotchar(tierBLong,  "Tier B Long",  "△", location.belowbar, color.lime,    size = size.tiny)
+plotchar(tierBShort, "Tier B Short", "▽", location.abovebar, color.fuchsia, size = size.tiny)
+
+f_alertMsg(bool isLong, Sig s) =>
+    "ES Tier " + (s.isA ? "A" : "B") + (isLong ? " LONG" : " SHORT") +
+     " | Zone: " + s.zType + " " + str.tostring(s.zTop, format.mintick) + "-" + str.tostring(s.zBot, format.mintick) +
+     " | Level: " + (s.isA ? s.lvl + " [T" + str.tostring(s.tier) + "]" : "none") +
+     " | Close: " + str.tostring(close, format.mintick) +
+     " | Regime: " + gamma_regime + (inFlip ? " (FLIP ZONE)" : "")
+
+if barstate.isconfirmed and sL.found
+    if sL.isA
+        string txt = "EDGE LONG @ " + sL.lvl + " [T" + str.tostring(sL.tier) + (sL.multi ? " cluster" : "") + "]" + sL.suffix
+        f_capSigLabel(label.new(bar_index, na, txt, yloc = yloc.belowbar, style = label.style_label_up,
+             color = color.new(color.lime, 15), textcolor = color.black, size = size.small))
+    alert(f_alertMsg(true, sL), alert.freq_once_per_bar_close)
+
+if barstate.isconfirmed and sS.found
+    if sS.isA
+        string txt = "EDGE SHORT @ " + sS.lvl + " [T" + str.tostring(sS.tier) + (sS.multi ? " cluster" : "") + "]" + sS.suffix
+        f_capSigLabel(label.new(bar_index, na, txt, yloc = yloc.abovebar, style = label.style_label_down,
+             color = color.new(color.fuchsia, 15), textcolor = color.white, size = size.small))
+    alert(f_alertMsg(false, sS), alert.freq_once_per_bar_close)
+
+// One alertcondition per signal type for TradingView UI alert setup
+alertcondition(tierALong,  "Tier A Long (Edge)",   "ES Tier A LONG — edge-confluent signal")
+alertcondition(tierAShort, "Tier A Short (Edge)",  "ES Tier A SHORT — edge-confluent signal")
+alertcondition(tierBLong,  "Tier B Long (Structure)",  "ES Tier B LONG — structure-only signal")
+alertcondition(tierBShort, "Tier B Short (Structure)", "ES Tier B SHORT — structure-only signal")
+
+// ───────────────────── Level labels (right edge) + table ───────────────────
+var table tbl = table.new(position.top_right, 2, 14, bgcolor = color.new(color.black, 55),
+     border_width = 1, border_color = color.new(color.gray, 75))
+
+f_cell(int r, string k, string v, color vcol) =>
+    table.cell(tbl, 0, r, k, text_color = color.new(color.silver, 20), text_halign = text.align_left, text_size = size.small)
+    table.cell(tbl, 1, r, v, text_color = vcol, text_halign = text.align_right, text_size = size.small)
+
+f_signed(float d) =>
+    (d >= 0 ? "+" : "") + str.tostring(d, "#.##")
+
+if barstate.islast
+    // Cluster labels at the right edge (recreated each update so TradingView's
+    // label rotation never garbage-collects them)
+    while array.size(lvlLabels) > 0
+        label.delete(array.pop(lvlLabels))
+    if array.size(clMin) > 0
+        for c = 0 to array.size(clMin) - 1
+            string t = array.get(clName, c) + " [T" + str.tostring(array.get(clTier, c)) + "]"
+            array.push(lvlLabels, label.new(bar_index + 3, math.avg(array.get(clMin, c), array.get(clMax, c)), t,
+                 style = label.style_label_left, color = color.new(color.black, 55),
+                 textcolor = color.white, size = size.small))
+
+    // Status table
+    ZStats st = ZStats.new()
+    f_accStats(bullFVG, st)
+    f_accStats(bearFVG, st)
+    f_accStats(bullOB, st)
+    f_accStats(bearOB, st)
+
+    // Nearest level cluster above / below price (levels sorted by price; the
+    // spec's "sort by tier" applies to which cluster wins on overlap — clusters
+    // already carry their best member tier)
+    string lvlUp = "-"
+    string lvlDn = "-"
+    float bestUp = na
+    float bestDn = na
+    if array.size(clMin) > 0
+        for c = 0 to array.size(clMin) - 1
+            if array.get(clMin, c) > close
+                float d = array.get(clMin, c) - close
+                if na(bestUp) or d < bestUp
+                    bestUp := d
+                    lvlUp  := array.get(clName, c) + " [T" + str.tostring(array.get(clTier, c)) + "] +" + str.tostring(d, "#.##")
+            else if array.get(clMax, c) < close
+                float d = close - array.get(clMax, c)
+                if na(bestDn) or d < bestDn
+                    bestDn := d
+                    lvlDn  := array.get(clName, c) + " [T" + str.tostring(array.get(clTier, c)) + "] -" + str.tostring(d, "#.##")
+
+    color regCol = isDeepNeg ? color.red : isNeg ? color.orange : color.lime
+    f_cell(0, "Regime", gamma_regime, regCol)
+    f_cell(1, "VT Δ", haveVT ? f_signed(close - vol_trigger) : "-", color.orange)
+    f_cell(2, "ZG Δ", haveZG ? f_signed(close - zero_gamma) : "-", color.white)
+    f_cell(3, "Band", inFlip ? "FLIP ZONE ⚠" : haveVT and haveZG ? (close > bandHi ? "Above band" : "Below band") : "-",
+         inFlip ? color.yellow : color.silver)
+    f_cell(4, "EM High Δ", haveEM ? f_signed(close - emHigh) : "-", color.yellow)
+    f_cell(5, "EM Low Δ",  haveEM ? f_signed(close - emLow) : "-", color.yellow)
+    string tiltTxt = gamma_tilt == 0 ? "-" : str.tostring(gamma_tilt, "#.##") +
+         (gamma_regime == "Positive" and gamma_tilt >= tilt_strong ? " | PIN CONVICTION: HIGH" :
+          gamma_regime == "Positive" and gamma_tilt < 1.0 ? " | TILT WARNING — pin weakening" : "")
+    f_cell(6, "Gamma Tilt", tiltTxt, gamma_tilt == 0 ? color.silver :
+         gamma_regime == "Positive" and gamma_tilt >= tilt_strong ? color.lime :
+         gamma_regime == "Positive" and gamma_tilt < 1.0 ? color.orange : color.silver)
+    f_cell(7, "RR(25Δ)", risk_reversal_25d == 0 ? "-" : str.tostring(risk_reversal_25d, "#.##"), color.silver)
+    f_cell(8, "Level ↑", lvlUp, color.silver)
+    f_cell(9, "Level ↓", lvlDn, color.silver)
+    f_cell(10, "Zones ↑", "Bull " + str.tostring(st.bullUp) + " / Bear " + str.tostring(st.bearUp), color.silver)
+    f_cell(11, "Zones ↓", "Bull " + str.tostring(st.bullDn) + " / Bear " + str.tostring(st.bearDn), color.silver)
+    f_cell(12, "Zone ↑", na(st.upDist) ? "-" : st.upTxt + " +" + str.tostring(st.upDist, "#.##"), color.silver)
+    f_cell(13, "Zone ↓", na(st.dnDist) ? "-" : st.dnTxt + " -" + str.tostring(st.dnDist, "#.##"), color.silver)
