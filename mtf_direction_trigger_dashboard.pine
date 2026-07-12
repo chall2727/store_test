@@ -1,0 +1,178 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// MTF Direction & Trigger Dashboard
+//
+// PURPOSE / GUARDRAILS — READ FIRST:
+//   This indicator DISPLAYS multi-timeframe state and FLAGS a mechanical
+//   trigger condition for discretionary confirmation. It does NOT recommend,
+//   confirm, or signal trades. It does not account for market regime,
+//   location (support/resistance), gamma/positioning, news, or risk.
+//   The trader decides; this tool only reports state.
+//
+// WHAT IT SHOWS (dashboard table, one row each):
+//   Row 1: 4H direction  — primary bias (top of the hierarchy)
+//   Row 2: 1H direction  — computed with the identical method
+//   Row 3: Agreement     — ALIGNED ▲ / ALIGNED ▼ / NO ALIGNMENT
+//   Row 4: Trigger       — entry-timeframe (5m/15m) mechanical trigger flag.
+//                          Dormant unless 4H and 1H agree.
+//
+// DIRECTION METHOD (transparent, configurable):
+//   Up      = close above MA  AND swing structure makes higher-high + higher-low
+//   Down    = close below MA  AND swing structure makes lower-high  + lower-low
+//   Neutral = anything else
+//   (MA length/type and swing pivot length are inputs.)
+//
+// TRIGGER METHOD (mechanical, direction-gated):
+//   Aligned Up   → bullish engulfing close OR close crossing back above the MA
+//   Aligned Down → bearish engulfing close OR close crossing back below the MA
+//   No alignment → trigger suppressed entirely.
+//   Labelled "TRIGGER" only — never "entry" or "buy/sell".
+//
+// NON-REPAINTING GUARANTEES:
+//   • Every higher-timeframe read uses request.security() with
+//     lookahead = barmerge.lookahead_off AND a [1] offset, so only the last
+//     CONFIRMED (closed) HTF bar is ever referenced.
+//   • The trigger is evaluated on closed entry-TF candles only, and is
+//     latched on a confirmed chart bar (barstate.isconfirmed).
+//   • Consequence: reads update one HTF bar after the fact by design.
+//     Replayed bar-by-bar, outputs do not shift.
+//
+// NOTE: Run this on an intraday chart at or below the selected entry
+//   timeframe (e.g. 1m–15m chart for a 15m entry TF). If the chart TF is
+//   higher than the entry TF, the trigger row shows a warning instead.
+// ─────────────────────────────────────────────────────────────────────────────
+//@version=6
+indicator("MTF Direction & Trigger Dashboard", shorttitle = "MTF D&T", overlay = true)
+
+// ── Inputs ───────────────────────────────────────────────────────────────────
+grpDir  = "Direction method"
+maLen   = input.int(20, "MA length",              minval = 2,  group = grpDir)
+maType  = input.string("EMA", "MA type",          options = ["SMA", "EMA"], group = grpDir)
+pivLen  = input.int(5,  "Swing pivot length",     minval = 2,  group = grpDir,
+     tooltip = "Bars on each side required to confirm a swing high/low. " +
+               "Larger = slower, more significant swings.")
+
+grpTrig = "Trigger"
+entryTf = input.string("15", "Entry timeframe",   options = ["5", "15"], group = grpTrig,
+     tooltip = "Timeframe (minutes) on which the mechanical trigger is evaluated.")
+showMkr = input.bool(true, "Plot trigger shape markers", group = grpTrig)
+
+grpTbl  = "Dashboard"
+tblPos  = input.string("Top right", "Table corner",
+     options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = grpTbl)
+
+// ── Direction engine ─────────────────────────────────────────────────────────
+// Runs inside request.security(), i.e. in the context of the requested
+// timeframe. Returns +1 (Up), -1 (Down), 0 (Neutral).
+f_direction() =>
+    ma = maType == "EMA" ? ta.ema(close, maLen) : ta.sma(close, maLen)
+    // Confirmed swing points (pivots confirm pivLen bars after they occur —
+    // they never repaint once printed).
+    ph = ta.pivothigh(high, pivLen, pivLen)
+    pl = ta.pivotlow(low,  pivLen, pivLen)
+    var float lastPH = na
+    var float prevPH = na
+    var float lastPL = na
+    var float prevPL = na
+    if not na(ph)
+        prevPH := lastPH
+        lastPH := ph
+    if not na(pl)
+        prevPL := lastPL
+        lastPL := pl
+    // Swing structure from the last two confirmed highs and lows.
+    haveSwings = not na(prevPH) and not na(prevPL)
+    structUp   = haveSwings and lastPH > prevPH and lastPL > prevPL   // HH + HL
+    structDn   = haveSwings and lastPH < prevPH and lastPL < prevPL   // LH + LL
+    // Direction requires BOTH the MA side and the swing structure to agree.
+    close > ma and structUp ? 1 : close < ma and structDn ? -1 : 0
+
+// ── Trigger engine (runs on the entry timeframe) ─────────────────────────────
+// Returns +1 (bullish candidate), -1 (bearish candidate), 0 (none) for the
+// entry-TF bar. Direction gating is applied later, at chart scope.
+f_trigger() =>
+    ma = maType == "EMA" ? ta.ema(close, maLen) : ta.sma(close, maLen)
+    // Real-body engulfing patterns.
+    bullEngulf = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+    bearEngulf = close < open and close[1] > open[1] and close <= open[1] and open >= close[1]
+    // Close reclaiming / losing the entry-TF MA.
+    reclaimUp  = ta.crossover(close, ma)
+    reclaimDn  = ta.crossunder(close, ma)
+    bullEngulf or reclaimUp ? 1 : bearEngulf or reclaimDn ? -1 : 0
+
+// ── Non-repainting HTF reads ─────────────────────────────────────────────────
+// [1] offset + lookahead_off ⇒ only the last CONFIRMED bar of each requested
+// timeframe is ever used. No future leak, no intraday repaint.
+dir4h   = request.security(syminfo.tickerid, "240",  f_direction()[1], lookahead = barmerge.lookahead_off)
+dir1h   = request.security(syminfo.tickerid, "60",   f_direction()[1], lookahead = barmerge.lookahead_off)
+trigRaw = request.security(syminfo.tickerid, entryTf, f_trigger()[1],  lookahead = barmerge.lookahead_off)
+
+// ── Agreement state (4H is the primary bias; 1H must confirm it) ─────────────
+alignedUp = dir4h ==  1 and dir1h ==  1
+alignedDn = dir4h == -1 and dir1h == -1
+
+// ── Trigger evaluation (chart scope) ─────────────────────────────────────────
+// Sanity guard: the trigger is meaningless if the chart TF exceeds the entry TF.
+chartTfTooHigh = timeframe.in_seconds() > timeframe.in_seconds(entryTf)
+
+// Fire exactly once per entry-TF candle: on the first confirmed chart bar of a
+// new entry-TF period, trigRaw holds the just-CLOSED entry-TF bar (the [1]
+// offset above). No alignment ⇒ suppressed — the flag stays dormant.
+newEntryBar = timeframe.change(entryTf)
+trigUpFired = not chartTfTooHigh and barstate.isconfirmed and newEntryBar and alignedUp and trigRaw ==  1
+trigDnFired = not chartTfTooHigh and barstate.isconfirmed and newEntryBar and alignedDn and trigRaw == -1
+
+// ── Shape markers (confirmed, aligned triggers only) ─────────────────────────
+plotshape(showMkr and trigUpFired, title = "Trigger ▲", style = shape.triangleup,
+     location = location.belowbar, color = color.new(color.teal, 0), size = size.small, text = "TRIGGER")
+plotshape(showMkr and trigDnFired, title = "Trigger ▼", style = shape.triangledown,
+     location = location.abovebar, color = color.new(color.maroon, 0), size = size.small, text = "TRIGGER")
+
+// ── Alerts — fire ONLY on the confirmed aligned trigger, never on alignment ──
+alertcondition(trigUpFired,               "MTF Trigger ▲ (confirmed, aligned)", "TRIGGER FIRED ▲ — 4H+1H aligned Up. Discretionary confirmation required; not a trade signal.")
+alertcondition(trigDnFired,               "MTF Trigger ▼ (confirmed, aligned)", "TRIGGER FIRED ▼ — 4H+1H aligned Down. Discretionary confirmation required; not a trade signal.")
+alertcondition(trigUpFired or trigDnFired, "MTF Trigger ▲ or ▼ (confirmed, aligned)", "TRIGGER FIRED — 4H+1H aligned. Discretionary confirmation required; not a trade signal.")
+
+// ── Dashboard table ──────────────────────────────────────────────────────────
+colUp   = color.new(color.teal,   0)
+colDn   = color.new(color.maroon, 0)
+colFlat = color.new(color.gray,   0)
+colWarn = color.new(color.orange, 0)
+colTxt  = color.white
+
+f_dirText(int d)  => d ==  1 ? "UP ▲"  : d == -1 ? "DOWN ▼" : "NEUTRAL"
+f_dirColor(int d) => d ==  1 ? colUp   : d == -1 ? colDn    : colFlat
+
+posTbl = tblPos == "Top right"    ? position.top_right    :
+         tblPos == "Top left"     ? position.top_left     :
+         tblPos == "Bottom right" ? position.bottom_right : position.bottom_left
+
+var table dash = table.new(posTbl, 2, 4, border_width = 1)
+
+// "TRIGGER FIRED" persists on screen until the next entry-TF candle closes,
+// then reverts to dormant/standing-by. Latched at chart scope, confirmed only.
+var int lastTrig = 0
+if newEntryBar and barstate.isconfirmed
+    lastTrig := trigUpFired ? 1 : trigDnFired ? -1 : 0
+suppressed = not alignedUp and not alignedDn
+
+if barstate.islast
+    agreeTxt = alignedUp ? "ALIGNED ▲" : alignedDn ? "ALIGNED ▼" : "NO ALIGNMENT"
+    agreeCol = alignedUp ? colUp : alignedDn ? colDn : colFlat
+
+    trigTxt = chartTfTooHigh ? "CHART TF > ENTRY TF" :
+         suppressed          ? "DORMANT (no alignment)" :
+         lastTrig ==  1      ? "TRIGGER FIRED ▲" :
+         lastTrig == -1      ? "TRIGGER FIRED ▼" : "STANDING BY"
+    trigCol = chartTfTooHigh ? colWarn :
+         suppressed          ? colFlat :
+         lastTrig ==  1      ? colUp :
+         lastTrig == -1      ? colDn : color.new(color.blue, 0)
+
+    table.cell(dash, 0, 0, "4H DIRECTION",            text_color = colTxt, bgcolor = color.new(color.black, 20), text_size = size.small)
+    table.cell(dash, 1, 0, f_dirText(dir4h),          text_color = colTxt, bgcolor = f_dirColor(dir4h),          text_size = size.small)
+    table.cell(dash, 0, 1, "1H DIRECTION",            text_color = colTxt, bgcolor = color.new(color.black, 20), text_size = size.small)
+    table.cell(dash, 1, 1, f_dirText(dir1h),          text_color = colTxt, bgcolor = f_dirColor(dir1h),          text_size = size.small)
+    table.cell(dash, 0, 2, "4H / 1H AGREEMENT",       text_color = colTxt, bgcolor = color.new(color.black, 20), text_size = size.small)
+    table.cell(dash, 1, 2, agreeTxt,                  text_color = colTxt, bgcolor = agreeCol,                   text_size = size.small)
+    table.cell(dash, 0, 3, "TRIGGER (" + entryTf + "m)", text_color = colTxt, bgcolor = color.new(color.black, 20), text_size = size.small)
+    table.cell(dash, 1, 3, trigTxt,                   text_color = colTxt, bgcolor = trigCol,                    text_size = size.small)
