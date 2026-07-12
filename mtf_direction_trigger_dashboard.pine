@@ -19,21 +19,34 @@
 //   Up      = close above MA  AND swing structure makes higher-high + higher-low
 //   Down    = close below MA  AND swing structure makes lower-high  + lower-low
 //   Neutral = anything else
-//   (MA length/type and swing pivot length are inputs.)
+//   Optional slope filter: the MA itself must also be rising (Up) / falling
+//   (Down), so a flat, whipsawing MA resolves to Neutral instead of flipping.
 //
 // TRIGGER METHOD (mechanical, direction-gated):
 //   Aligned Up   → bullish engulfing close OR close crossing back above the MA
-//   Aligned Down → bearish engulfing close OR close crossing back below the MA
+//   Aligned Down → bearish equivalent
 //   No alignment → trigger suppressed entirely.
+//   Quality filters (each an input toggle, all fully mechanical):
+//     • Pullback arming — the trigger is DISARMED until price has pulled back
+//       to the entry-TF MA, and re-disarms after firing. One trigger per
+//       pullback cycle; no "any green candle mid-trend" flags.
+//     • ATR body filter — the trigger candle's real body must be at least
+//       (multiplier × ATR), so micro-candles can't qualify as engulfing.
+//     • Volume filter (off by default) — trigger candle volume must exceed
+//       its 20-bar average.
+//     • Session window (off by default) — triggers only inside a defined
+//       intraday session (exchange timezone).
 //   Labelled "TRIGGER" only — never "entry" or "buy/sell".
 //
 // NON-REPAINTING GUARANTEES:
 //   • Every higher-timeframe read uses request.security() with
 //     lookahead = barmerge.lookahead_off AND a [1] offset, so only the last
 //     CONFIRMED (closed) HTF bar is ever referenced.
-//   • The trigger is evaluated on closed entry-TF candles only, and is
-//     latched on a confirmed chart bar (barstate.isconfirmed).
-//   • Consequence: reads update one HTF bar after the fact by design.
+//   • The trigger is evaluated on closed candles only (barstate.isconfirmed).
+//     When the chart TF equals the entry TF, it is evaluated natively on the
+//     chart's own confirmed close — same no-repaint guarantee, one candle
+//     less lag than routing through request.security()[1].
+//   • Consequence: HTF reads update one HTF bar after the fact by design.
 //     Replayed bar-by-bar, outputs do not shift.
 //
 // NOTE: Run this on an intraday chart at or below the selected entry
@@ -44,20 +57,34 @@
 indicator("MTF Direction & Trigger Dashboard", shorttitle = "MTF D&T", overlay = true)
 
 // ── Inputs ───────────────────────────────────────────────────────────────────
-grpDir  = "Direction method"
-maLen   = input.int(20, "MA length",              minval = 2,  group = grpDir)
-maType  = input.string("EMA", "MA type",          options = ["SMA", "EMA"], group = grpDir)
-pivLen  = input.int(5,  "Swing pivot length",     minval = 2,  group = grpDir,
+grpDir   = "Direction method"
+maLen    = input.int(20, "MA length",          minval = 2, group = grpDir)
+maType   = input.string("EMA", "MA type",      options = ["SMA", "EMA"], group = grpDir)
+pivLen   = input.int(5,  "Swing pivot length", minval = 2, group = grpDir,
      tooltip = "Bars on each side required to confirm a swing high/low. " +
                "Larger = slower, more significant swings.")
+useSlope = input.bool(true, "Require MA slope to agree", group = grpDir,
+     tooltip = "Up also requires the MA to be rising over the slope lookback; " +
+               "Down requires it falling. Filters flat-MA chop into Neutral.")
+slopeLen = input.int(3, "MA slope lookback", minval = 1, group = grpDir)
 
-grpTrig = "Trigger"
-entryTf = input.string("15", "Entry timeframe",   options = ["5", "15"], group = grpTrig,
+grpTrig  = "Trigger"
+entryTf  = input.string("15", "Entry timeframe", options = ["5", "15"], group = grpTrig,
      tooltip = "Timeframe (minutes) on which the mechanical trigger is evaluated.")
-showMkr = input.bool(true, "Plot trigger shape markers", group = grpTrig)
+usePull  = input.bool(true, "Require pullback to MA (arm/disarm)", group = grpTrig,
+     tooltip = "Trigger is armed only after price pulls back to the entry-TF MA, " +
+               "and disarms after firing — one trigger per pullback cycle.")
+useAtrF  = input.bool(true, "Require minimum candle body (× ATR)", group = grpTrig)
+atrLen   = input.int(14, "ATR length", minval = 1, group = grpTrig)
+atrMult  = input.float(0.5, "Min body as ATR multiple", minval = 0.0, step = 0.1, group = grpTrig)
+useVolF  = input.bool(false, "Require above-average volume", group = grpTrig,
+     tooltip = "Trigger candle volume must exceed its 20-bar SMA.")
+useSess  = input.bool(false, "Restrict triggers to session", group = grpTrig)
+sessWin  = input.session("0930-1600", "Trigger session (exchange tz)", group = grpTrig)
+showMkr  = input.bool(true, "Plot trigger shape markers", group = grpTrig)
 
-grpTbl  = "Dashboard"
-tblPos  = input.string("Top right", "Table corner",
+grpTbl   = "Dashboard"
+tblPos   = input.string("Top right", "Table corner",
      options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = grpTbl)
 
 // ── Direction engine ─────────────────────────────────────────────────────────
@@ -83,28 +110,60 @@ f_direction() =>
     haveSwings = not na(prevPH) and not na(prevPL)
     structUp   = haveSwings and lastPH > prevPH and lastPL > prevPL   // HH + HL
     structDn   = haveSwings and lastPH < prevPH and lastPL < prevPL   // LH + LL
-    // Direction requires BOTH the MA side and the swing structure to agree.
-    close > ma and structUp ? 1 : close < ma and structDn ? -1 : 0
+    // Optional slope agreement: a flat MA resolves to Neutral, not a flip.
+    slopeUp = not useSlope or ma > ma[slopeLen]
+    slopeDn = not useSlope or ma < ma[slopeLen]
+    // Direction requires the MA side, swing structure, and slope to agree.
+    close > ma and structUp and slopeUp ? 1 :
+         close < ma and structDn and slopeDn ? -1 : 0
 
 // ── Trigger engine (runs on the entry timeframe) ─────────────────────────────
 // Returns +1 (bullish candidate), -1 (bearish candidate), 0 (none) for the
 // entry-TF bar. Direction gating is applied later, at chart scope.
+// All ta.* calls execute unconditionally on every bar (consistency requirement).
 f_trigger() =>
-    ma = maType == "EMA" ? ta.ema(close, maLen) : ta.sma(close, maLen)
+    ma     = maType == "EMA" ? ta.ema(close, maLen) : ta.sma(close, maLen)
+    atr    = ta.atr(atrLen)
+    volAvg = ta.sma(volume, 20)
+    // Quality filters — each collapses to `true` when its toggle is off.
+    bodyOk = not useAtrF or math.abs(close - open) >= atrMult * atr
+    volOk  = not useVolF or volume > volAvg
     // Real-body engulfing patterns.
     bullEngulf = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
     bearEngulf = close < open and close[1] > open[1] and close <= open[1] and open >= close[1]
     // Close reclaiming / losing the entry-TF MA.
-    reclaimUp  = ta.crossover(close, ma)
-    reclaimDn  = ta.crossunder(close, ma)
-    bullEngulf or reclaimUp ? 1 : bearEngulf or reclaimDn ? -1 : 0
+    reclaimUp = ta.crossover(close, ma)
+    reclaimDn = ta.crossunder(close, ma)
+    // Pullback arming: a side arms when price pulls back to the MA and
+    // disarms once it fires — one trigger per pullback cycle, which also
+    // debounces MA-whipsaw crossovers.
+    var bool armedUp = false
+    var bool armedDn = false
+    if low <= ma
+        armedUp := true
+    if high >= ma
+        armedDn := true
+    bullRaw = (bullEngulf or reclaimUp) and bodyOk and volOk and (not usePull or armedUp)
+    bearRaw = (bearEngulf or reclaimDn) and bodyOk and volOk and (not usePull or armedDn)
+    if bullRaw
+        armedUp := false
+    if bearRaw
+        armedDn := false
+    bullRaw ? 1 : bearRaw ? -1 : 0
 
 // ── Non-repainting HTF reads ─────────────────────────────────────────────────
 // [1] offset + lookahead_off ⇒ only the last CONFIRMED bar of each requested
 // timeframe is ever used. No future leak, no intraday repaint.
 dir4h   = request.security(syminfo.tickerid, "240",  f_direction()[1], lookahead = barmerge.lookahead_off)
 dir1h   = request.security(syminfo.tickerid, "60",   f_direction()[1], lookahead = barmerge.lookahead_off)
-trigRaw = request.security(syminfo.tickerid, entryTf, f_trigger()[1],  lookahead = barmerge.lookahead_off)
+trigSec = request.security(syminfo.tickerid, entryTf, f_trigger()[1],  lookahead = barmerge.lookahead_off)
+
+// When the chart TF equals the entry TF, evaluate the trigger natively on the
+// chart's own bars: barstate.isconfirmed already guarantees a closed candle,
+// so this is equally non-repainting and avoids the one-candle lag that the
+// security()[1] route would add. (Called unconditionally on every bar.)
+sameTf     = timeframe.in_seconds() == timeframe.in_seconds(entryTf)
+trigNative = f_trigger()
 
 // ── Agreement state (4H is the primary bias; 1H must confirm it) ─────────────
 alignedUp = dir4h ==  1 and dir1h ==  1
@@ -114,12 +173,18 @@ alignedDn = dir4h == -1 and dir1h == -1
 // Sanity guard: the trigger is meaningless if the chart TF exceeds the entry TF.
 chartTfTooHigh = timeframe.in_seconds() > timeframe.in_seconds(entryTf)
 
-// Fire exactly once per entry-TF candle: on the first confirmed chart bar of a
-// new entry-TF period, trigRaw holds the just-CLOSED entry-TF bar (the [1]
-// offset above). No alignment ⇒ suppressed — the flag stays dormant.
-newEntryBar = timeframe.change(entryTf)
-trigUpFired = not chartTfTooHigh and barstate.isconfirmed and newEntryBar and alignedUp and trigRaw ==  1
-trigDnFired = not chartTfTooHigh and barstate.isconfirmed and newEntryBar and alignedDn and trigRaw == -1
+// Optional session window (exchange timezone). Collapses to `true` when off.
+inSession = not useSess or not na(time(timeframe.period, sessWin))
+
+// Evaluation point — exactly once per entry-TF candle, on confirmed bars only:
+//   same TF  → this chart bar's own confirmed close (native, no extra lag);
+//   lower TF → first confirmed chart bar of a new entry-TF period, where
+//              trigSec ([1] offset above) holds the just-CLOSED entry-TF bar.
+// No alignment ⇒ suppressed — the flag stays dormant.
+evalNow = barstate.isconfirmed and (sameTf or timeframe.change(entryTf))
+trigVal = sameTf ? trigNative : trigSec
+trigUpFired = not chartTfTooHigh and evalNow and inSession and alignedUp and trigVal ==  1
+trigDnFired = not chartTfTooHigh and evalNow and inSession and alignedDn and trigVal == -1
 
 // ── Shape markers (confirmed, aligned triggers only) ─────────────────────────
 plotshape(showMkr and trigUpFired, title = "Trigger ▲", style = shape.triangleup,
@@ -151,7 +216,7 @@ var table dash = table.new(posTbl, 2, 4, border_width = 1)
 // "TRIGGER FIRED" persists on screen until the next entry-TF candle closes,
 // then reverts to dormant/standing-by. Latched at chart scope, confirmed only.
 var int lastTrig = 0
-if newEntryBar and barstate.isconfirmed
+if evalNow
     lastTrig := trigUpFired ? 1 : trigDnFired ? -1 : 0
 suppressed = not alignedUp and not alignedDn
 
