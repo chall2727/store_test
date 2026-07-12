@@ -1,0 +1,125 @@
+// =============================================================================
+//  Gamma Polarity Zones (SPX→ES)
+// =============================================================================
+//  GUARDRAILS — READ BEFORE USE
+//  ---------------------------------------------------------------------------
+//  * All zone values are MANUALLY ENTERED from a SpotGamma strike-bars /
+//    fishbone view. There are NO external data feeds — nothing updates itself.
+//  * SPX strikes are converted to ES via a FIXED basis offset. Values are
+//    static until you manually update them.
+//  * This indicator displays POSITIONING ZONES for DISCRETIONARY use only.
+//    It produces NO buy/sell signals and NO alerts.
+//  * Display-only overlay: it draws background bands and nothing else, so it
+//    runs alongside an existing gamma-levels indicator without conflict.
+// =============================================================================
+//@version=6
+indicator("Gamma Polarity Zones (SPX→ES)", overlay = true, max_boxes_count = 16)
+
+// =============================================================================
+//  SETTINGS (BASIS)
+// -----------------------------------------------------------------------------
+//  NOTE: The SPX→ES basis drifts day to day and converges toward zero into
+//  contract expiry — re-confirm it at the start of EACH session before
+//  trusting any zone placement.
+// =============================================================================
+GRP_SET = "Settings (basis)"
+basis = input.float(46.0, "SPX→ES basis (ES = SPX + basis)", step = 0.25, group = GRP_SET)
+
+// Rendering controls — all live-editable from the settings panel.
+// Transparency: 0 = fully opaque, 100 = fully invisible (higher = more transparent).
+posTransp    = input.int(88,   "Positive zone transparency", minval = 0, maxval = 100, group = GRP_SET)
+negTransp    = input.int(88,   "Negative zone transparency", minval = 0, maxval = 100, group = GRP_SET)
+showBorders  = input.bool(true, "Show borders",               group = GRP_SET)
+borderTransp = input.int(60,   "Border transparency",        minval = 0, maxval = 100, group = GRP_SET)
+
+// =============================================================================
+//  POSITIVE (PURPLE) GAMMA ZONES — dealer-long, mean-reversion regions
+//  Enter SPX strike bounds; each is plotted at SPX + basis on the ES chart.
+//  A zone draws only when its toggle is ON and both bounds are non-zero.
+// =============================================================================
+GRP_POS = "Positive Zones"
+p1_on = input.bool(false, "Zone 1 on",  group = GRP_POS, inline = "p1")
+p1_lo = input.float(0.0,  "lower SPX",  group = GRP_POS, inline = "p1")
+p1_hi = input.float(0.0,  "upper SPX",  group = GRP_POS, inline = "p1")
+p2_on = input.bool(false, "Zone 2 on",  group = GRP_POS, inline = "p2")
+p2_lo = input.float(0.0,  "lower SPX",  group = GRP_POS, inline = "p2")
+p2_hi = input.float(0.0,  "upper SPX",  group = GRP_POS, inline = "p2")
+p3_on = input.bool(false, "Zone 3 on",  group = GRP_POS, inline = "p3")
+p3_lo = input.float(0.0,  "lower SPX",  group = GRP_POS, inline = "p3")
+p3_hi = input.float(0.0,  "upper SPX",  group = GRP_POS, inline = "p3")
+p4_on = input.bool(false, "Zone 4 on",  group = GRP_POS, inline = "p4")
+p4_lo = input.float(0.0,  "lower SPX",  group = GRP_POS, inline = "p4")
+p4_hi = input.float(0.0,  "upper SPX",  group = GRP_POS, inline = "p4")
+
+// =============================================================================
+//  NEGATIVE (RED) GAMMA ZONES — the "air pockets" / accelerant regions
+//  Dealer-short gamma: moves into these ranges tend to accelerate, not fade.
+//  Same entry format as the positive zones.
+// =============================================================================
+GRP_NEG = "Negative Zones"
+n1_on = input.bool(false, "Zone 1 on",  group = GRP_NEG, inline = "n1")
+n1_lo = input.float(0.0,  "lower SPX",  group = GRP_NEG, inline = "n1")
+n1_hi = input.float(0.0,  "upper SPX",  group = GRP_NEG, inline = "n1")
+n2_on = input.bool(false, "Zone 2 on",  group = GRP_NEG, inline = "n2")
+n2_lo = input.float(0.0,  "lower SPX",  group = GRP_NEG, inline = "n2")
+n2_hi = input.float(0.0,  "upper SPX",  group = GRP_NEG, inline = "n2")
+n3_on = input.bool(false, "Zone 3 on",  group = GRP_NEG, inline = "n3")
+n3_lo = input.float(0.0,  "lower SPX",  group = GRP_NEG, inline = "n3")
+n3_hi = input.float(0.0,  "upper SPX",  group = GRP_NEG, inline = "n3")
+n4_on = input.bool(false, "Zone 4 on",  group = GRP_NEG, inline = "n4")
+n4_lo = input.float(0.0,  "lower SPX",  group = GRP_NEG, inline = "n4")
+n4_hi = input.float(0.0,  "upper SPX",  group = GRP_NEG, inline = "n4")
+
+// =============================================================================
+//  COLORS
+//  Fill opacity defaults to ~88 transparency so candles and other indicators'
+//  lines read clearly through the bands; borders are a slightly darker shade
+//  of each fill color, kept thin (width 1). Fill and border transparency are
+//  driven by the Settings inputs above; turning "Show borders" off hides the
+//  outlines entirely, independent of the fill.
+// =============================================================================
+COL_POS_FILL   = color.new(#9C27B0, posTransp)                                    // translucent purple fill
+COL_POS_BORDER = showBorders ? color.new(#6A1B9A, borderTransp) : color.new(#6A1B9A, 100)  // darker purple border
+COL_NEG_FILL   = color.new(#EF5350, negTransp)                                    // translucent red fill
+COL_NEG_BORDER = showBorders ? color.new(#B71C1C, borderTransp) : color.new(#B71C1C, 100)  // darker red border
+
+// How far back (in bars) the left edge of each band starts. The right edge
+// extends indefinitely via extend.right, so this only sets visual coverage
+// of recent history.
+LOOKBACK_BARS = 500
+
+// =============================================================================
+//  BOX MANAGEMENT
+//  All boxes live in one persistent array. On the last bar we delete every
+//  prior box and redraw the active zones — at most 8 boxes exist at any
+//  time, nothing accumulates bar-to-bar, and no orphans are left behind.
+// =============================================================================
+var box[] zoneBoxes = array.new<box>()
+
+// Draws one zone band if it is active (toggle ON and both bounds non-zero).
+// SPX bounds are converted to ES here: ES = SPX + basis.
+drawZone(bool active, float spxLo, float spxHi, color fillCol, color borderCol) =>
+    if active and spxLo != 0.0 and spxHi != 0.0
+        esLo = spxLo + basis
+        esHi = spxHi + basis
+        b = box.new(left = math.max(0, bar_index - LOOKBACK_BARS), top = math.max(esLo, esHi), right = bar_index, bottom = math.min(esLo, esHi), border_color = borderCol, border_width = 1, extend = extend.right, bgcolor = fillCol)
+        array.push(zoneBoxes, b)
+
+// Redraw only on the last bar — cheap on historical bars, always current on
+// the live bar, and safe when inputs are edited mid-session.
+if barstate.islast
+    // Clear every box from the previous redraw before drawing fresh ones.
+    while array.size(zoneBoxes) > 0
+        box.delete(array.pop(zoneBoxes))
+
+    // Positive (purple) zones
+    drawZone(p1_on, p1_lo, p1_hi, COL_POS_FILL, COL_POS_BORDER)
+    drawZone(p2_on, p2_lo, p2_hi, COL_POS_FILL, COL_POS_BORDER)
+    drawZone(p3_on, p3_lo, p3_hi, COL_POS_FILL, COL_POS_BORDER)
+    drawZone(p4_on, p4_lo, p4_hi, COL_POS_FILL, COL_POS_BORDER)
+
+    // Negative (red) zones — the air pockets
+    drawZone(n1_on, n1_lo, n1_hi, COL_NEG_FILL, COL_NEG_BORDER)
+    drawZone(n2_on, n2_lo, n2_hi, COL_NEG_FILL, COL_NEG_BORDER)
+    drawZone(n3_on, n3_lo, n3_hi, COL_NEG_FILL, COL_NEG_BORDER)
+    drawZone(n4_on, n4_lo, n4_hi, COL_NEG_FILL, COL_NEG_BORDER)
