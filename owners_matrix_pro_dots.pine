@@ -1152,9 +1152,17 @@ regimeOK = gammaRegime == "Positive" or allowCTinNeg
 qualBuy  = showQualified and buySignal  and atLevel and regimeOK and inSession
 qualSell = showQualified and sellSignal and atLevel and regimeOK and inSession
 
-plotchar(qualBuy,  title="Qualified Buy Dot",  char="▲", location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
-plotchar(qualSell, title="Qualified Sell Dot", char="▼", location=location.abovebar, color=color.new(color.red,  0), size=size.small)
+// The original script already uses all 64 plot slots, so the qualified dots
+// are drawn with labels and alerts fire via alert() — neither counts toward
+// the plot limit (plotchar/alertcondition both do).
+qualBuyY  = math.min(-130.0, waveBotForDots - 42.0)
+qualSellY = math.max(130.0, waveTopForDots + 42.0)
 
-alertcondition(qualBuy,  title="OM Qualified BUY Dot",  message="OM Qualified BUY on {{ticker}} {{interval}}")
-alertcondition(qualSell, title="OM Qualified SELL Dot", message="OM Qualified SELL on {{ticker}} {{interval}}")
+if qualBuy
+    label.new(bar_index, qualBuyY, "▲", xloc.bar_index, yloc.price, color=color.new(color.lime, 100), style=label.style_none, textcolor=color.new(color.lime, 0), size=size.small)
+    alert("OM Qualified BUY on " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar_close)
+
+if qualSell
+    label.new(bar_index, qualSellY, "▼", xloc.bar_index, yloc.price, color=color.new(color.red, 100), style=label.style_none, textcolor=color.new(color.red, 0), size=size.small)
+    alert("OM Qualified SELL on " + syminfo.ticker + " " + timeframe.period, alert.freq_once_per_bar_close)
 // ===== END QUALIFIED DOT OVERLAY =====
