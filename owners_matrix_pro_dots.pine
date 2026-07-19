@@ -1,0 +1,1160 @@
+//@version=6
+indicator("Owners Matrix Pro Dots", shorttitle="OM Dots", overlay=false, max_labels_count=300)
+
+//=============================================================================
+// OWNERS MATRIX PRO DOTS
+// VMC Cipher B style WaveTrend + Divergence logic
+// Includes Owners Matrix table: Fib/Net, ADX Control, RelVol, Wyckoff, Elliott, Rating
+// Visual markers remain DOTS on the indicator.
+// Dynamic Discord webhook alert router checks 4H, Daily, Weekly, Monthly from only two list alerts.
+// For TradingView alerts, use: OM Dots -> Any alert() function call.
+//=============================================================================
+
+//-----------------------------------------------------------------------------
+// GROUPS
+//-----------------------------------------------------------------------------
+groupWT       = "WAVETREND SETTINGS"
+groupMFI      = "MFI SETTINGS"
+groupRSI      = "RSI SETTINGS"
+groupSTOCH    = "STOCH SETTINGS"
+groupSCH      = "SCHAFF SETTINGS"
+groupSOMMI    = "SOMMI SETTINGS"
+groupMACD     = "MACD SETTINGS"
+groupMode     = "MODE SETTINGS"
+groupColor    = "COLOR SETTINGS"
+groupAmp      = "WAVE AMPLITUDE"
+groupVol      = "RELATIVE VOLUME"
+groupADX      = "ADX / CONTROL"
+groupMatrix   = "OWNERS MATRIX TABLE"
+groupWebhook  = "DISCORD WEBHOOK ALERTS"
+
+//-----------------------------------------------------------------------------
+// WAVETREND SETTINGS
+//-----------------------------------------------------------------------------
+showWT              = input.bool(true, "Show WaveTrend", group=groupWT)
+showBuyDots         = input.bool(true, "Show Buy dots", group=groupWT)
+showGoldDots        = input.bool(true, "Show Gold dots", group=groupWT)
+showSellDots        = input.bool(true, "Show Sell dots", group=groupWT)
+showDivDots         = input.bool(true, "Show Div. dots", group=groupWT)
+showFastWT          = input.bool(false, "Show Fast WT / Cross Dots", group=groupWT)
+
+wtChannelLen        = input.int(9, "WT Channel Length", minval=1, group=groupWT)
+wtAverageLen        = input.int(12, "WT Average Length", minval=1, group=groupWT)
+wtMASource          = input.source(hlc3, "WT MA Source", group=groupWT)
+wtMALen             = input.int(3, "WT MA Length", minval=1, group=groupWT)
+
+wtOB1               = input.float(53.0, "WT Overbought Level 1", group=groupWT)
+wtOB2               = input.float(60.0, "WT Overbought Level 2", group=groupWT)
+wtOB3               = input.float(100.0, "WT Overbought Level 3", group=groupWT)
+
+wtOS1               = input.float(-53.0, "WT Oversold Level 1", group=groupWT)
+wtOS2               = input.float(-40.0, "WT Oversold Level 2", group=groupWT)
+wtOS3               = input.float(-75.0, "WT Oversold Level 3", group=groupWT)
+
+wtShowDiv           = input.bool(true, "Show WT Regular Divergences", group=groupWT)
+wtShowHiddenDiv     = input.bool(false, "Show WT Hidden Divergences", group=groupWT)
+showHiddenDivNoLim  = input.bool(true, "Not apply OB/OS Limits on Hidden Divergences", group=groupWT)
+wtDivOBLevel        = input.float(45.0, "WT Bearish Divergence min", group=groupWT)
+wtDivOSLevel        = input.float(-65.0, "WT Bullish Divergence min", group=groupWT)
+wtDivAddShow        = input.bool(true, "Show 2nd WT Regular Divergences", group=groupWT)
+wtDivOBLevelAdd     = input.float(15.0, "WT 2nd Bearish Divergence", group=groupWT)
+wtDivOSLevelAdd     = input.float(-40.0, "WT 2nd Bullish Divergence 15 min", group=groupWT)
+
+//-----------------------------------------------------------------------------
+// MFI SETTINGS
+//-----------------------------------------------------------------------------
+showMFI             = input.bool(false, "Show MFI", group=groupMFI)
+mfiPeriod           = input.int(60, "MFI Period", minval=1, group=groupMFI)
+mfiAreaMultiplier   = input.float(150.0, "MFI Area multiplier", minval=1, group=groupMFI)
+mfiAreaYPos         = input.float(2.5, "MFI Area Y Pos", group=groupMFI)
+
+//-----------------------------------------------------------------------------
+// RSI SETTINGS
+//-----------------------------------------------------------------------------
+showRSI             = input.bool(true, "Show RSI Calculations", group=groupRSI)
+rsiSrc              = input.source(close, "RSI Source", group=groupRSI)
+rsiLen              = input.int(13, "RSI Length", minval=1, group=groupRSI)
+rsiOversold         = input.float(30.0, "RSI Oversold", minval=1, maxval=50, group=groupRSI)
+rsiOverbought       = input.float(60.0, "RSI Overbought", minval=50, maxval=99, group=groupRSI)
+rsiShowDiv          = input.bool(false, "Show RSI Regular Divergences", group=groupRSI)
+rsiShowHiddenDiv    = input.bool(false, "Show RSI Hidden Divergences", group=groupRSI)
+rsiDivOBLevel       = input.float(60.0, "RSI Bearish Divergence min", group=groupRSI)
+rsiDivOSLevel       = input.float(30.0, "RSI Bullish Divergence min", group=groupRSI)
+
+//-----------------------------------------------------------------------------
+// STOCH SETTINGS
+//-----------------------------------------------------------------------------
+showStoch           = input.bool(true, "Show Stochastic RSI Calculations", group=groupSTOCH)
+stochUseLog         = input.bool(true, "Use Log?", group=groupSTOCH)
+stochUseAvgKD       = input.bool(true, "Use Average of both K & D", group=groupSTOCH)
+stochSrc            = input.source(close, "Stochastic RSI Source", group=groupSTOCH)
+stochLen            = input.int(14, "Stochastic RSI Length", minval=1, group=groupSTOCH)
+stochRsiLen         = input.int(14, "RSI Length", minval=1, group=groupSTOCH)
+stochKSmooth        = input.int(3, "Stochastic RSI K Smooth", minval=1, group=groupSTOCH)
+stochDSmooth        = input.int(3, "Stochastic RSI D Smooth", minval=1, group=groupSTOCH)
+stochShowDiv        = input.bool(false, "Show Stoch Regular Divergences", group=groupSTOCH)
+stochShowHiddenDiv  = input.bool(false, "Show Stoch Hidden Divergences", group=groupSTOCH)
+
+//-----------------------------------------------------------------------------
+// SCHAFF SETTINGS
+//-----------------------------------------------------------------------------
+showSchaff          = input.bool(false, "Show Schaff TC Calculations", group=groupSCH)
+schaffSrc           = input.source(close, "Schaff TC Source", group=groupSCH)
+schaffLen           = input.int(10, "Schaff TC", minval=1, group=groupSCH)
+schaffFastLen       = input.int(23, "Schaff TC Fast Lenght", minval=1, group=groupSCH)
+schaffSlowLen       = input.int(50, "Schaff TC Slow Length", minval=1, group=groupSCH)
+schaffFactor        = input.float(0.5, "Schaff TC Factor", minval=0.01, maxval=1.0, group=groupSCH)
+
+//-----------------------------------------------------------------------------
+// SOMMI / MACD PLACEHOLDER SETTINGS
+//-----------------------------------------------------------------------------
+showSommiFlag       = input.bool(false, "Show Sommi flag", group=groupSOMMI)
+showSommiFWave      = input.bool(false, "Show Sommi F. Wave", group=groupSOMMI)
+sommiFWaveTF        = input.string("720", "Sommi F. Wave timeframe", group=groupSOMMI)
+sommiFWaveBearLvl   = input.float(0.0, "F. Wave Bear Level (less than)", group=groupSOMMI)
+sommiFWaveBullLvl   = input.float(0.0, "F. Wave Bull Level (more than)", group=groupSOMMI)
+sommiWTBearLvl      = input.float(0.0, "WT Bear Level (more than)", group=groupSOMMI)
+sommiWTBullLvl      = input.float(0.0, "WT Bull Level (less than)", group=groupSOMMI)
+sommiMFBearLvl      = input.float(0.0, "Money flow Bear Level (less than)", group=groupSOMMI)
+sommiMFBullLvl      = input.float(0.0, "Money flow Bull Level (more than)", group=groupSOMMI)
+showSommiDiamond    = input.bool(false, "Show Sommi diamond", group=groupSOMMI)
+sommiCandleTF1      = input.string("60", "HTF Candle Res. 1", group=groupSOMMI)
+sommiCandleTF2      = input.string("240", "HTF Candle Res. 2", group=groupSOMMI)
+sommiDiamondWTBear  = input.float(0.0, "WT Bear Level (More than)", group=groupSOMMI)
+sommiDiamondWTBull  = input.float(0.0, "WT Bull Level (Less than)", group=groupSOMMI)
+
+showMACDColors      = input.bool(false, "Show MACD Colors", group=groupMACD)
+macdColorTF         = input.string("240", "MACD Colors MACD TF", group=groupMACD)
+
+//-----------------------------------------------------------------------------
+// MACD DOT FORECAST SETTINGS
+//-----------------------------------------------------------------------------
+showDotForecast     = input.bool(true, "Show Dot Forecast In Matrix", group=groupMACD)
+dotForecastView     = input.string("All", "Dot Forecast Timeframe", options=["Off", "Daily", "Weekly", "Monthly", "All"], group=groupMACD)
+dotForecastDisplay  = input.string("Compact", "Dot Forecast Display", options=["Compact", "Expanded"], group=groupMACD)
+dotForecastBasis    = input.string("MACD Histogram", "Forecast Basis", options=["MACD Histogram", "MACD Signal Cross"], group=groupMACD)
+forecastFastLen     = input.int(12, "Forecast MACD Fast Length", minval=1, group=groupMACD)
+forecastSlowLen     = input.int(26, "Forecast MACD Slow Length", minval=1, group=groupMACD)
+forecastSignalLen   = input.int(9, "Forecast MACD Signal Length", minval=1, group=groupMACD)
+forecastSensitivity = input.float(1.00, "Forecast Sensitivity", minval=0.25, maxval=5.00, step=0.05, group=groupMACD)
+forecastMaxBars     = input.int(20, "Max Forecast Bars", minval=3, maxval=60, group=groupMACD)
+actualDotActiveBars  = input.int(3, "Actual Dot Active Bars", minval=1, maxval=10, group=groupMACD)
+actualDotActiveBarsD = input.int(3, "Daily Actual Dot Active Bars", minval=1, maxval=20, group=groupMACD)
+actualDotActiveBarsW = input.int(2, "Weekly Actual Dot Active Bars", minval=1, maxval=10, group=groupMACD)
+actualDotActiveBarsM = input.int(2, "Monthly Actual Dot Active Bars", minval=1, maxval=6, group=groupMACD)
+includeWtCrossDots  = input.bool(true, "Include Raw WT Cross Dots In Cycle", group=groupMACD)
+
+darkMode            = input.bool(false, "Dark mode", group=groupMode)
+
+//-----------------------------------------------------------------------------
+// COLORS
+//-----------------------------------------------------------------------------
+colorRSIOB          = input.color(color.rgb(239, 58, 58), "RSI OverBought", group=groupColor)
+colorRSIOS          = input.color(color.rgb(48, 225, 55), "RSI OverSold", group=groupColor)
+colorRSIMid         = input.color(color.rgb(188, 57, 218), "RSI InBetween", group=groupColor)
+colorMFIPos         = input.color(color.rgb(48, 225, 55), "MFI Color > 0", group=groupColor)
+colorMFINeg         = input.color(color.rgb(255, 57, 48), "MFI Color < 0", group=groupColor)
+colorRed            = input.color(color.rgb(255, 0, 0), "WT Bear Div", group=groupColor)
+colorGreen          = input.color(color.rgb(0, 220, 130), "WT Bull Div", group=groupColor)
+colorBuyDot         = input.color(color.rgb(0, 220, 130), "WT Buy Dot", group=groupColor)
+colorSellDot        = input.color(color.rgb(255, 82, 82), "WT Sell Dot", group=groupColor)
+colorWT1Fill        = input.color(color.rgb(73, 148, 227), "WT1 Fill", group=groupColor)
+colorWT2Fill        = input.color(color.rgb(36, 23, 113), "WT2 Fill", group=groupColor)
+colorVWAP           = input.color(color.white, "VWAP", group=groupColor)
+colorStochK         = input.color(color.rgb(15, 184, 205), "Stoch K", group=groupColor)
+colorStochD         = input.color(color.black, "Stoch D", group=groupColor)
+colorGold           = input.color(color.rgb(226, 164, 0), "Gold Dot", group=groupColor)
+colorHiddenDiv      = input.color(color.rgb(230, 0, 230), "Hidden Div Color", group=groupColor)
+
+//-----------------------------------------------------------------------------
+// WAVE AMPLITUDE
+//-----------------------------------------------------------------------------
+manualWaveAmp       = input.float(1.45, "Base Wave Amplifier", minval=0.50, maxval=5.00, step=0.05, group=groupAmp)
+useAdaptiveDepth    = input.bool(true, "Adaptive Wave Expansion", group=groupAmp)
+zoneStretch         = input.float(1.20, "Extreme Zone Expansion", minval=0.00, maxval=4.00, step=0.05, group=groupAmp)
+stageDepthStep      = input.float(0.45, "Signal Stage Expansion", minval=0.00, maxval=2.50, step=0.01, group=groupAmp)
+relVolDepthAdd      = input.float(0.10, "RelVol Expansion Boost", minval=0.00, maxval=0.75, step=0.01, group=groupAmp)
+adxDepthAdd         = input.float(0.10, "ADX Expansion Boost", minval=0.00, maxval=0.75, step=0.01, group=groupAmp)
+maxWaveScale        = input.float(4.50, "Maximum Total Wave Scale", minval=1.00, maxval=9.00, step=0.05, group=groupAmp)
+
+//-----------------------------------------------------------------------------
+// RELATIVE VOLUME / ADX / MATRIX
+//-----------------------------------------------------------------------------
+relVolLen           = input.int(20, "Relative Volume Length", minval=1, group=groupVol)
+relVolActive        = input.float(1.20, "Active RelVol", minval=0.1, step=0.05, group=groupVol)
+relVolStrong        = input.float(1.75, "Strong RelVol", minval=0.1, step=0.05, group=groupVol)
+
+adxLen              = input.int(14, "ADX Length", minval=2, group=groupADX)
+adxSmooth           = input.int(14, "ADX Smoothing", minval=2, group=groupADX)
+adxActive           = input.float(20.0, "Active ADX", minval=1, step=0.5, group=groupADX)
+adxStrong           = input.float(30.0, "Strong ADX", minval=1, step=0.5, group=groupADX)
+
+showMatrixBox       = input.bool(true, "Show Matrix Box", group=groupMatrix)
+matrixPosition      = input.string("Top Right", "Matrix Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=groupMatrix)
+fibLookback         = input.int(89, "Fib / Net Lookback", minval=20, maxval=500, group=groupMatrix)
+wyckoffRangeLen     = input.int(55, "Wyckoff Range Length", minval=20, maxval=300, group=groupMatrix)
+wyckoffTrendLen     = input.int(34, "Wyckoff Trend Length", minval=5, maxval=200, group=groupMatrix)
+showMatrixValues    = input.bool(true, "Show Values In Matrix", group=groupMatrix)
+
+//-----------------------------------------------------------------------------
+// DISCORD WEBHOOK ALERTS
+//-----------------------------------------------------------------------------
+enableWebhookAlerts = input.bool(true, "Enable Discord Webhook Alerts", group=groupWebhook)
+alert4H             = input.bool(true, "Report 4 Hour Signals", group=groupWebhook)
+alertD              = input.bool(true, "Report Daily Signals", group=groupWebhook)
+alertW              = input.bool(true, "Report Weekly Signals", group=groupWebhook)
+alertM              = input.bool(true, "Report Monthly Signals", group=groupWebhook)
+alertBullDiv        = input.bool(true, "Report Bullish Divergence Signals", group=groupWebhook)
+alertBearDiv        = input.bool(true, "Report Bearish Divergence Signals", group=groupWebhook)
+alertBuySellDots    = input.bool(true, "Report Green/Red Dot Signals", group=groupWebhook)
+alertGoldDots       = input.bool(true, "Report Gold Dot Signals", group=groupWebhook)
+
+//-----------------------------------------------------------------------------
+// FUNCTIONS
+//-----------------------------------------------------------------------------
+f_wavetrend(_src, _chLen, _avgLen, _maLen) =>
+    esa = ta.ema(_src, _chLen)
+    dev = ta.ema(math.abs(_src - esa), _chLen)
+    ci = dev != 0 ? (_src - esa) / (0.015 * dev) : 0.0
+    wt1 = ta.ema(ci, _avgLen)
+    wt2 = ta.sma(wt1, _maLen)
+    wtVwap = wt1 - wt2
+    [wt1, wt2, wtVwap]
+
+f_top_fractal(_src) =>
+    _src[4] < _src[2] and _src[3] < _src[2] and _src[2] > _src[1] and _src[2] > _src[0]
+
+f_bot_fractal(_src) =>
+    _src[4] > _src[2] and _src[3] > _src[2] and _src[2] < _src[1] and _src[2] < _src[0]
+
+f_findDivs(_src, _topLimit, _botLimit, _useLimits) =>
+    topOk = f_top_fractal(_src) and (_useLimits ? _src[2] >= _topLimit : true)
+    botOk = f_bot_fractal(_src) and (_useLimits ? _src[2] <= _botLimit : true)
+
+    fractalTop = topOk ? _src[2] : na
+    fractalBot = botOk ? _src[2] : na
+
+    highPrev = ta.valuewhen(not na(fractalTop), _src[2], 0)[2]
+    highPrice = ta.valuewhen(not na(fractalTop), high[2], 0)[2]
+
+    lowPrev = ta.valuewhen(not na(fractalBot), _src[2], 0)[2]
+    lowPrice = ta.valuewhen(not na(fractalBot), low[2], 0)[2]
+
+    bearSignal = not na(fractalTop) and not na(highPrice) and not na(highPrev) and high[2] > highPrice and _src[2] < highPrev
+    bullSignal = not na(fractalBot) and not na(lowPrice) and not na(lowPrev) and low[2] < lowPrice and _src[2] > lowPrev
+
+    bearHidden = not na(fractalTop) and not na(highPrice) and not na(highPrev) and high[2] < highPrice and _src[2] > highPrev
+    bullHidden = not na(fractalBot) and not na(lowPrice) and not na(lowPrev) and low[2] > lowPrice and _src[2] < lowPrev
+
+    [not na(fractalTop), not na(fractalBot), lowPrev, bearSignal, bullSignal, bearHidden, bullHidden]
+
+f_clamp(_x, _min, _max) =>
+    math.max(_min, math.min(_x, _max))
+
+f_pos(_pos) =>
+    _pos == "Top Left" ? position.top_left :
+     _pos == "Bottom Right" ? position.bottom_right :
+     _pos == "Bottom Left" ? position.bottom_left :
+     position.top_right
+
+f_bgState(_bull, _bear) =>
+    _bull ? color.rgb(0, 200, 120) :
+     _bear ? color.rgb(255, 65, 95) :
+     color.rgb(80, 84, 92)
+
+f_ratingBg(_rating) =>
+    _rating == "STRONG BUY" ? color.rgb(255, 215, 0) :
+     _rating == "BUY" ? color.rgb(0, 200, 120) :
+     _rating == "STRONG SELL" ? color.rgb(145, 0, 0) :
+     _rating == "SELL" ? color.rgb(255, 45, 65) :
+     color.rgb(80, 84, 92)
+
+f_ratingTxt(_rating) =>
+    _rating == "STRONG BUY" or _rating == "BUY" ? color.black : color.white
+
+f_phaseBg(_phase) =>
+    _phase == "Accumulation" ? color.rgb(0, 200, 120) :
+     _phase == "Mark Up" ? color.rgb(255, 215, 0) :
+     _phase == "Distribution" ? color.rgb(255, 120, 0) :
+     _phase == "Mark Down" ? color.rgb(255, 45, 65) :
+     color.rgb(80, 84, 92)
+
+f_elliottBg(_phase) =>
+    _phase == "Wave 1 / Early Impulse" ? color.rgb(0, 200, 120) :
+     _phase == "Wave 3 / Expansion" ? color.rgb(255, 215, 0) :
+     _phase == "Wave 5 / Exhaustion" ? color.rgb(255, 120, 0) :
+     _phase == "ABC Correction" ? color.rgb(255, 45, 65) :
+     color.rgb(80, 84, 92)
+
+//-----------------------------------------------------------------------------
+// ACTUAL-DOT-AWARE MACD DOT CYCLE FORECAST FUNCTIONS
+//-----------------------------------------------------------------------------
+// Priority rule:
+// 1. Most recent actual green/red dot printed recently = ACTIVE
+// 2. Then forecast forming dots from MACD + WT curl + RSI
+// 3. Then pressure/late-cycle states
+// This prevents the forecast from saying "R form" when a real WT red dot already printed.
+f_dotCycleCore(_fastLen, _slowLen, _signalLen, _activeBars) =>
+    [mLine, sLine, hist] = ta.macd(close, _fastLen, _slowLen, _signalLen)
+    histSlope = hist - hist[1]
+    histSlopeSm = ta.ema(histSlope, 3)
+    histAccel = histSlopeSm - histSlopeSm[1]
+
+    macdSpread = mLine - sLine
+    spreadSlope = macdSpread - macdSpread[1]
+    spreadSlopeSm = ta.ema(spreadSlope, 3)
+    spreadAccel = spreadSlopeSm - spreadSlopeSm[1]
+
+    basisValue = dotForecastBasis == "MACD Histogram" ? hist : macdSpread
+    basisSlope = dotForecastBasis == "MACD Histogram" ? histSlopeSm : spreadSlopeSm
+    basisAccel = dotForecastBasis == "MACD Histogram" ? histAccel : spreadAccel
+
+    [localWt1, localWt2, localWtVwap] = f_wavetrend(hlc3, wtChannelLen, wtAverageLen, wtMALen)
+    localRsi = ta.rsi(close, rsiLen)
+
+    localWtCross = ta.cross(localWt1, localWt2)
+    localWtCrossUp = localWt2 - localWt1 <= 0
+    localWtCrossDown = localWt2 - localWt1 >= 0
+    localWtOversold = localWt2 <= wtOS1
+    localWtOverbought = localWt2 >= wtOB1
+
+    wtBullCurl = localWt1 > localWt1[1] and localWt1[1] <= localWt1[2]
+    wtBearCurl = localWt1 < localWt1[1] and localWt1[1] >= localWt1[2]
+    wtCrossUpLocal = ta.crossover(localWt1, localWt2)
+    wtCrossDownLocal = ta.crossunder(localWt1, localWt2)
+    wtBullControl = localWt1 > localWt2
+    wtBearControl = localWt1 < localWt2
+    wtOversoldLocal = math.min(localWt1, localWt2) <= wtOS1
+    wtOverboughtLocal = math.max(localWt1, localWt2) >= wtOB1
+    rsiImproving = localRsi > localRsi[1]
+    rsiWeakening = localRsi < localRsi[1]
+
+    // Local WT divergence approximation on the requested timeframe.
+    // This lets the cycle row respect visible divergence dots too, not only MACD slope.
+    [localWtTop, localWtBot, localWtLowPrev, localWtBearDiv, localWtBullDiv, localWtBearHidden, localWtBullHidden] =
+         f_findDivs(localWt2, wtDivOBLevel, wtDivOSLevel, true)
+
+    [localWtTopAdd, localWtBotAdd, localWtLowPrevAdd, localWtBearDivAdd, localWtBullDivAdd, localWtBearHiddenAdd, localWtBullHiddenAdd] =
+         f_findDivs(localWt2, wtDivOBLevelAdd, wtDivOSLevelAdd, true)
+
+    [localWtTopNL, localWtBotNL, localWtLowPrevNL, localWtBearDivNL, localWtBullDivNL, localWtBearHiddenNL, localWtBullHiddenNL] =
+         f_findDivs(localWt2, 0.0, 0.0, false)
+
+    localHiddenBull = showHiddenDivNoLim ? localWtBullHiddenNL : localWtBullHidden
+    localHiddenBear = showHiddenDivNoLim ? localWtBearHiddenNL : localWtBearHidden
+
+    // Actual visible dot families.
+    // The cycle row must respect both major buy/sell dots and the smaller raw WT cross dots,
+    // because the small green/red cross dots are often the first visible dot before the larger signal dot.
+    actualGreenBuyDot = localWtCross and localWtCrossUp and localWtOversold
+    actualRedSellDot = localWtCross and localWtCrossDown and localWtOverbought
+    actualGreenCrossDot = includeWtCrossDots and localWtCross and localWtCrossUp
+    actualRedCrossDot = includeWtCrossDots and localWtCross and localWtCrossDown
+
+    actualGreenDotNow =
+         actualGreenBuyDot or
+         actualGreenCrossDot or
+         (wtShowDiv and localWtBullDiv) or
+         (wtShowDiv and wtDivAddShow and localWtBullDivAdd) or
+         (wtShowHiddenDiv and localHiddenBull)
+
+    actualRedDotNow =
+         actualRedSellDot or
+         actualRedCrossDot or
+         (wtShowDiv and localWtBearDiv) or
+         (wtShowDiv and wtDivAddShow and localWtBearDivAdd) or
+         (wtShowHiddenDiv and localHiddenBear)
+
+    barsSinceGreen = ta.barssince(actualGreenDotNow)
+    barsSinceRed = ta.barssince(actualRedDotNow)
+
+    actualGreenActive = not na(barsSinceGreen) and barsSinceGreen <= _activeBars
+    actualRedActive = not na(barsSinceRed) and barsSinceRed <= _activeBars
+
+    // Most-recent actual dot wins.
+    // If a green and red dot are both within the active window, choose the newest one
+    // instead of always giving red priority. If both appear equally recent, use current
+    // wave/MACD direction as the tie breaker.
+    actualGreenWins = actualGreenActive and (not actualRedActive or barsSinceGreen < barsSinceRed or (barsSinceGreen == barsSinceRed and (basisSlope >= 0 or wtBullControl)))
+    actualRedWins = actualRedActive and (not actualGreenActive or barsSinceRed < barsSinceGreen or (barsSinceGreen == barsSinceRed and (basisSlope < 0 or wtBearControl)))
+
+    // Projection velocity uses MACD slope plus acceleration.
+    // This catches turns earlier than raw histogram distance / slope alone.
+    velocity = basisSlope + basisAccel * 0.50
+    rawBars = velocity != 0 ? math.abs(basisValue / velocity) / forecastSensitivity : na
+    barsEst = not na(rawBars) ? math.ceil(f_clamp(rawBars, 1, forecastMaxBars)) : na
+
+    greenForming = basisValue < 0 and basisSlope > 0 and (basisAccel > 0 or wtBullCurl or wtCrossUpLocal or rsiImproving)
+    redForming = basisValue > 0 and basisSlope < 0 and (basisAccel < 0 or wtBearCurl or wtCrossDownLocal or rsiWeakening)
+
+    greenActive = basisValue >= 0 and basisSlope > 0 and wtBullControl
+    redActive = basisValue <= 0 and basisSlope < 0 and wtBearControl
+
+    greenLate = basisValue > 0 and (basisSlope <= 0 or wtBearCurl or wtOverboughtLocal)
+    redLate = basisValue < 0 and (basisSlope >= 0 or wtBullCurl or wtOversoldLocal)
+
+    // State codes:
+    //  1 = Green forming,  2 = Green active,  3 = Green late / exhaustion watch
+    // -1 = Red forming,   -2 = Red active,   -3 = Red late / reversal watch
+    // Actual dots override forecasts, but the most recent actual dot wins.
+    // This fixes cases where a visible monthly green dot was incorrectly labeled as M:R active.
+    state =
+         actualGreenWins ? 2 :
+         actualRedWins ? -2 :
+         greenForming ? 1 :
+         redForming ? -1 :
+         greenLate ? 3 :
+         redLate ? -3 :
+         greenActive ? 2 :
+         redActive ? -2 :
+         0
+
+    confidence = 0.0
+    confidence += actualGreenActive or actualRedActive ? 2.0 : 0.0
+    confidence += math.abs(basisSlope) > math.abs(basisSlope[1]) ? 1.0 : 0.0
+    confidence += math.abs(basisAccel) > 0 ? 1.0 : 0.0
+    confidence += wtBullCurl or wtBearCurl ? 1.0 : 0.0
+    confidence += wtOversoldLocal or wtOverboughtLocal ? 1.0 : 0.0
+
+    [state, barsEst, confidence, hist, histSlopeSm, histAccel, mLine, sLine]
+
+f_cycleText(_tfName, _state, _bars) =>
+    etaUnit =
+         _tfName == "D" ? "d" :
+         _tfName == "W" ? "w" :
+         "mo"
+
+    _state == 1 and not na(_bars) ? "Green forming ~" + str.tostring(_bars) + etaUnit :
+     _state == -1 and not na(_bars) ? "Red forming ~" + str.tostring(_bars) + etaUnit :
+     _state == 2 ? "Green active" :
+     _state == -2 ? "Red active" :
+     _state == 3 ? "Green late" :
+     _state == -3 ? "Red late" :
+     "No edge"
+
+f_compactCycleText(_tfName, _state, _bars) =>
+    prefix = _tfName + ":"
+    etaUnit =
+         _tfName == "D" ? "d" :
+         _tfName == "W" ? "w" :
+         "mo"
+
+    _state == 1 and not na(_bars) ? prefix + "G form ~" + str.tostring(_bars) + etaUnit :
+     _state == -1 and not na(_bars) ? prefix + "R form ~" + str.tostring(_bars) + etaUnit :
+     _state == 2 ? prefix + "G active" :
+     _state == -2 ? prefix + "R active" :
+     _state == 3 ? prefix + "G late" :
+     _state == -3 ? prefix + "R late" :
+     prefix + "No edge"
+
+f_cycleBg(_state) =>
+    _state == 1 ? color.rgb(0, 220, 130) :
+     _state == 2 ? color.rgb(0, 150, 95) :
+     _state == 3 ? color.rgb(255, 215, 0) :
+     _state == -1 ? color.rgb(255, 82, 82) :
+     _state == -2 ? color.rgb(145, 0, 0) :
+     _state == -3 ? color.rgb(255, 140, 0) :
+     color.rgb(80, 84, 92)
+
+f_cycleTxt(_state) =>
+    _state == 1 or _state == 2 or _state == 3 or _state == -3 ? color.black : color.white
+
+f_watchBg(_state) =>
+    _state == 1 ? color.rgb(0, 220, 130) :
+     _state == -3 ? color.rgb(255, 215, 0) :
+     _state == -1 or _state == -2 ? color.rgb(255, 82, 82) :
+     color.rgb(80, 84, 92)
+
+f_watchTxt(_state) =>
+    _state == 1 or _state == -3 ? color.black : color.white
+//-----------------------------------------------------------------------------
+// CORE INDICATORS
+//-----------------------------------------------------------------------------
+[wt1Raw, wt2Raw, wtVwapRaw] = f_wavetrend(wtMASource, wtChannelLen, wtAverageLen, wtMALen)
+
+wtCross = ta.cross(wt1Raw, wt2Raw)
+wtCrossUp = wt2Raw - wt1Raw <= 0
+wtCrossDown = wt2Raw - wt1Raw >= 0
+wtOversold = wt2Raw <= wtOS1
+wtOverbought = wt2Raw >= wtOB1
+
+bullTurn = wt1Raw > wt1Raw[1] and wt1Raw[1] <= wt1Raw[2]
+bearTurn = wt1Raw < wt1Raw[1] and wt1Raw[1] >= wt1Raw[2]
+
+rsi = ta.rsi(rsiSrc, rsiLen)
+dailyRsi = request.security(syminfo.tickerid, "D", ta.rsi(close, rsiLen), barmerge.gaps_off, barmerge.lookahead_off)
+weeklyRsi = request.security(syminfo.tickerid, "W", ta.rsi(close, rsiLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+//-----------------------------------------------------------------------------
+// HIGHER-TIMEFRAME MACD DOT CYCLE FORECAST
+//-----------------------------------------------------------------------------
+[dDotState, dDotBars, dDotConf, dMacdHist, dMacdSlope, dMacdAccel, dMacdLine, dMacdSignal] =
+     request.security(syminfo.tickerid, "D", f_dotCycleCore(forecastFastLen, forecastSlowLen, forecastSignalLen, actualDotActiveBarsD), barmerge.gaps_off, barmerge.lookahead_off)
+
+[wDotState, wDotBars, wDotConf, wMacdHist, wMacdSlope, wMacdAccel, wMacdLine, wMacdSignal] =
+     request.security(syminfo.tickerid, "W", f_dotCycleCore(forecastFastLen, forecastSlowLen, forecastSignalLen, actualDotActiveBarsW), barmerge.gaps_off, barmerge.lookahead_off)
+
+[mDotState, mDotBars, mDotConf, mMacdHist, mMacdSlope, mMacdAccel, mMacdLine, mMacdSignal] =
+     request.security(syminfo.tickerid, "M", f_dotCycleCore(forecastFastLen, forecastSlowLen, forecastSignalLen, actualDotActiveBarsM), barmerge.gaps_off, barmerge.lookahead_off)
+
+dailyDotCycleText = f_cycleText("D", dDotState, dDotBars)
+weeklyDotCycleText = f_cycleText("W", wDotState, wDotBars)
+monthlyDotCycleText = f_cycleText("M", mDotState, mDotBars)
+
+showDailyForecast = showDotForecast and (dotForecastView == "Daily" or dotForecastView == "All")
+showWeeklyForecast = showDotForecast and (dotForecastView == "Weekly" or dotForecastView == "All")
+showMonthlyForecast = showDotForecast and (dotForecastView == "Monthly" or dotForecastView == "All")
+
+compactDotCycleText =
+     (showDailyForecast ? f_compactCycleText("D", dDotState, dDotBars) : "D:-") + " | " +
+     (showWeeklyForecast ? f_compactCycleText("W", wDotState, wDotBars) : "W:-") + " | " +
+     (showMonthlyForecast ? f_compactCycleText("M", mDotState, mDotBars) : "M:-")
+
+compactDotState = showDailyForecast and (dDotState == 1 or dDotState == 2) ? dDotState :
+     showWeeklyForecast and (wDotState == 1 or wDotState == 2) ? wDotState :
+     showMonthlyForecast and (mDotState == 1 or mDotState == 2) ? mDotState :
+     showDailyForecast and dDotState == -3 ? dDotState :
+     showDailyForecast and (dDotState == -1 or dDotState == -2) ? dDotState :
+     showWeeklyForecast and (wDotState == -1 or wDotState == -2 or wDotState == -3) ? wDotState :
+     showMonthlyForecast and (mDotState == -1 or mDotState == -2 or mDotState == -3) ? mDotState :
+     0
+
+monthEndWindow = dayofmonth(time) >= 24
+allGreenAligned = dDotState > 0 and wDotState > 0 and mDotState > 0
+mixedGreenSetup = (dDotState == 1 or dDotState == -3) and wDotState > 0
+redRiskNow = dDotState == -1 or dDotState == -2
+
+nextDotWatchText =
+     monthEndWindow and (mDotState == 1 or mDotState == 2) and (dDotState == 1 or dDotState == -3) ? "June green watch: D curl-up" :
+     allGreenAligned ? "Green alignment active" :
+     mixedGreenSetup ? "Early green watch: D curl-up" :
+     dDotState == 1 ? "Daily green forming" :
+     dDotState == -3 ? "Red late: reversal watch" :
+     redRiskNow ? "Red risk: wait for curl" :
+     dDotState == 3 ? "Green late: avoid chase" :
+     "No clean early edge"
+
+nextDotWatchState =
+     monthEndWindow and (mDotState == 1 or mDotState == 2) and (dDotState == 1 or dDotState == -3) ? 1 :
+     allGreenAligned ? 2 :
+     mixedGreenSetup ? 1 :
+     dDotState == 1 ? 1 :
+     dDotState == -3 ? -3 :
+     redRiskNow ? -2 :
+     dDotState == 3 ? 3 :
+     0
+
+// MFI-style area.
+mfiRaw = ta.mfi(hlc3, mfiPeriod)
+mfiArea = ((mfiRaw - 50.0) / 50.0) * mfiAreaMultiplier + mfiAreaYPos
+
+// Stoch RSI calculations only.
+stochRsiBase = ta.rsi(stochSrc, stochRsiLen)
+stochLowest = ta.lowest(stochRsiBase, stochLen)
+stochHighest = ta.highest(stochRsiBase, stochLen)
+stochRange = math.max(stochHighest - stochLowest, syminfo.mintick)
+stochRaw = 100.0 * (stochRsiBase - stochLowest) / stochRange
+stochRawLog = stochUseLog ? math.log(math.max(stochRaw, 1.0)) / math.log(100.0) * 100.0 : stochRaw
+stochKBase = ta.sma(stochRawLog, stochKSmooth)
+stochDBase = ta.sma(stochKBase, stochDSmooth)
+stochK = stochUseAvgKD ? (stochKBase + stochDBase) / 2.0 : stochKBase
+
+// Schaff calculations only.
+macdSchaff = ta.ema(schaffSrc, schaffFastLen) - ta.ema(schaffSrc, schaffSlowLen)
+schaffLow = ta.lowest(macdSchaff, schaffLen)
+schaffHigh = ta.highest(macdSchaff, schaffLen)
+schaffRange = math.max(schaffHigh - schaffLow, syminfo.mintick)
+schaffK = 100.0 * (macdSchaff - schaffLow) / schaffRange
+schaffD = ta.ema(schaffK, schaffLen)
+var float schaffTC = na
+schaffTC := ta.ema(schaffD, schaffLen) * schaffFactor + nz(schaffTC[1]) * (1.0 - schaffFactor)
+
+// RelVol / ADX.
+volBase = ta.sma(volume, relVolLen)
+relVol = volBase > 0 ? volume / volBase : 0.0
+rvActive = relVol >= relVolActive
+rvStrong = relVol >= relVolStrong
+
+[plusDI, minusDI, adx] = ta.dmi(adxLen, adxSmooth)
+buyersControl = plusDI > minusDI
+sellersControl = minusDI > plusDI
+adxActiveNow = adx >= adxActive
+adxStrongNow = adx >= adxStrong
+
+// EMA cloud score.
+ema8 = ta.ema(close, 8)
+ema21 = ta.ema(close, 21)
+ema34 = ta.ema(close, 34)
+ema50 = ta.ema(close, 50)
+ema72 = ta.ema(close, 72)
+ema89 = ta.ema(close, 89)
+cloudScore = (ema8 >= ema21 ? 1 : -1) + (ema34 >= ema50 ? 1 : -1) + (ema72 >= ema89 ? 1 : -1)
+
+//-----------------------------------------------------------------------------
+// DIVERGENCES
+//-----------------------------------------------------------------------------
+[wtFractalTop, wtFractalBot, wtLowPrev, wtBearDiv, wtBullDiv, wtBearDivHidden, wtBullDivHidden] =
+     f_findDivs(wt2Raw, wtDivOBLevel, wtDivOSLevel, true)
+
+[wtFractalTopAdd, wtFractalBotAdd, wtLowPrevAdd, wtBearDivAdd, wtBullDivAdd, wtBearDivHiddenAdd, wtBullDivHiddenAdd] =
+     f_findDivs(wt2Raw, wtDivOBLevelAdd, wtDivOSLevelAdd, true)
+
+[wtFractalTopNL, wtFractalBotNL, wtLowPrevNL, wtBearDivNL, wtBullDivNL, wtBearDivHiddenNL, wtBullDivHiddenNL] =
+     f_findDivs(wt2Raw, 0.0, 0.0, false)
+
+wtBearDivHiddenFinal = showHiddenDivNoLim ? wtBearDivHiddenNL : wtBearDivHidden
+wtBullDivHiddenFinal = showHiddenDivNoLim ? wtBullDivHiddenNL : wtBullDivHidden
+
+[rsiFractalTop, rsiFractalBot, rsiLowPrev, rsiBearDiv, rsiBullDiv, rsiBearDivHidden, rsiBullDivHidden] =
+     f_findDivs(rsi, rsiDivOBLevel, rsiDivOSLevel, true)
+
+[rsiFractalTopNL, rsiFractalBotNL, rsiLowPrevNL, rsiBearDivNL, rsiBullDivNL, rsiBearDivHiddenNL, rsiBullDivHiddenNL] =
+     f_findDivs(rsi, 0.0, 0.0, false)
+
+rsiBearDivHiddenFinal = showHiddenDivNoLim ? rsiBearDivHiddenNL : rsiBearDivHidden
+rsiBullDivHiddenFinal = showHiddenDivNoLim ? rsiBullDivHiddenNL : rsiBullDivHidden
+
+[stochFractalTop, stochFractalBot, stochLowPrev, stochBearDiv, stochBullDiv, stochBearDivHidden, stochBullDivHidden] =
+     f_findDivs(stochK, 0.0, 0.0, false)
+
+//-----------------------------------------------------------------------------
+// DOT LOGIC
+//-----------------------------------------------------------------------------
+crossDotColor = wt2Raw - wt1Raw > 0 ? colorSellDot : colorBuyDot
+
+buySignal = wtCross and wtCrossUp and wtOversold
+sellSignal = wtCross and wtCrossDown and wtOverbought
+
+buySignalDiv =
+     (wtShowDiv and wtBullDiv) or
+     (wtShowDiv and wtDivAddShow and wtBullDivAdd) or
+     (rsiShowDiv and rsiBullDiv) or
+     (stochShowDiv and stochBullDiv)
+
+sellSignalDiv =
+     (wtShowDiv and wtBearDiv) or
+     (wtShowDiv and wtDivAddShow and wtBearDivAdd) or
+     (rsiShowDiv and rsiBearDiv) or
+     (stochShowDiv and stochBearDiv)
+
+hiddenBullDivActive =
+     (wtShowHiddenDiv and wtBullDivHiddenFinal) or
+     (rsiShowHiddenDiv and rsiBullDivHiddenFinal) or
+     (stochShowHiddenDiv and stochBullDivHidden)
+
+hiddenBearDivActive =
+     (wtShowHiddenDiv and wtBearDivHiddenFinal) or
+     (rsiShowHiddenDiv and rsiBearDivHiddenFinal) or
+     (stochShowHiddenDiv and stochBearDivHidden)
+
+buySignalDivColor =
+     wtBullDiv ? colorGreen :
+     wtBullDivAdd ? color.new(colorGreen, 60) :
+     rsiBullDiv ? colorGreen :
+     stochBullDiv ? colorGreen :
+     na
+
+sellSignalDivColor =
+     wtBearDiv ? colorRed :
+     wtBearDivAdd ? color.new(colorRed, 60) :
+     rsiBearDiv ? colorRed :
+     stochBearDiv ? colorRed :
+     na
+
+lastRsiAtWtBot = ta.valuewhen(wtFractalBot, rsi[2], 0)[2]
+
+wtGoldBuy =
+     ((wtShowDiv and wtBullDiv) or (rsiShowDiv and rsiBullDiv) or (stochShowDiv and stochBullDiv)) and
+     not na(wtLowPrev) and
+     wtLowPrev <= -80.0 and
+     wt2Raw > -75.0 and
+     wtLowPrev - wt2Raw <= -5.0 and
+     lastRsiAtWtBot < rsiOversold
+
+bullZone1 = math.min(wt1Raw, wt2Raw) <= wtOS1
+bullZone2 = math.min(wt1Raw, wt2Raw) <= wtOS2
+bullZone3 = math.min(wt1Raw, wt2Raw) <= wtOS3
+
+bearZone1 = math.max(wt1Raw, wt2Raw) >= wtOB1
+bearZone2 = math.max(wt1Raw, wt2Raw) >= wtOB2
+bearZone3 = math.max(wt1Raw, wt2Raw) >= wtOB3
+
+//-----------------------------------------------------------------------------
+// WAVE AMPLITUDE
+//-----------------------------------------------------------------------------
+stageNow =
+     wtGoldBuy ? 4 :
+     buySignalDiv or sellSignalDiv ? 3 :
+     buySignal or sellSignal ? 2 :
+     bullZone3 or bearZone3 ? 3 :
+     bullZone2 or bearZone2 ? 2 :
+     bullZone1 or bearZone1 ? 1 :
+     0
+
+extremeRef = math.max(math.abs(wtOB3), math.abs(wtOS3))
+normFast = f_clamp(math.abs(wt1Raw) / extremeRef, 0.0, 1.5)
+normSlow = f_clamp(math.abs(wt2Raw) / extremeRef, 0.0, 1.5)
+
+confirmBoost = 0.0
+confirmBoost += rvActive ? relVolDepthAdd : 0.0
+confirmBoost += rvStrong ? relVolDepthAdd : 0.0
+confirmBoost += adxActiveNow ? adxDepthAdd : 0.0
+confirmBoost += adxStrongNow ? adxDepthAdd : 0.0
+
+adaptiveFast = useAdaptiveDepth ? normFast * zoneStretch + stageNow * stageDepthStep + confirmBoost : 0.0
+adaptiveSlow = useAdaptiveDepth ? normSlow * (zoneStretch * 0.85) + stageNow * (stageDepthStep * 0.85) + confirmBoost * 0.80 : 0.0
+
+fastScale = math.min(manualWaveAmp + adaptiveFast, maxWaveScale)
+slowScale = math.min(manualWaveAmp + adaptiveSlow, maxWaveScale)
+
+wt1 = wt1Raw * fastScale
+wt2 = wt2Raw * slowScale
+wtVwap = wtVwapRaw * fastScale
+waveDiff = wt1 - wt2
+
+//-----------------------------------------------------------------------------
+// OWNERS MATRIX TABLE LOGIC
+//-----------------------------------------------------------------------------
+fibHigh = ta.highest(high, fibLookback)
+fibLow = ta.lowest(low, fibLookback)
+fibRange = math.max(fibHigh - fibLow, syminfo.mintick)
+fibNet = f_clamp((close - fibLow) / fibRange * 100.0, 0.0, 100.0)
+
+fibZone =
+     fibNet >= 70 ? "Premium" :
+     fibNet <= 30 ? "Discount" :
+     "Equilibrium"
+
+fibBias =
+     fibNet <= 38.2 ? 1 :
+     fibNet >= 61.8 ? -1 :
+     0
+
+controlText =
+     buyersControl ? "Buyers" :
+     sellersControl ? "Sellers" :
+     "Neutral"
+
+adxStrengthText =
+     adxStrongNow ? "Strong" :
+     adxActiveNow ? "Active" :
+     "Quiet"
+
+adxText = controlText + " | ADX " + str.tostring(math.round(adx)) + " " + adxStrengthText
+
+adxBias =
+     adxStrongNow and buyersControl ? 2 :
+     adxActiveNow and buyersControl ? 1 :
+     adxStrongNow and sellersControl ? -2 :
+     adxActiveNow and sellersControl ? -1 :
+     0
+
+relVolStrengthText =
+     rvStrong ? "Strong" :
+     rvActive ? "Active" :
+     "Quiet"
+
+relVolText = str.tostring(relVol, "#.##") + "x | " + relVolStrengthText
+
+relVolBias =
+     rvStrong and buyersControl ? 2 :
+     rvActive and buyersControl ? 1 :
+     rvStrong and sellersControl ? -2 :
+     rvActive and sellersControl ? -1 :
+     0
+
+rangeHigh = ta.highest(high, wyckoffRangeLen)
+rangeLow = ta.lowest(low, wyckoffRangeLen)
+rangeSize = math.max(rangeHigh - rangeLow, syminfo.mintick)
+rangePos = (close - rangeLow) / rangeSize
+trendEma = ta.ema(close, wyckoffTrendLen)
+trendSlope = trendEma - trendEma[5]
+rangeCompression = ta.atr(14) / rangeSize
+isRange = rangeCompression < 0.08
+
+wyckoffPhase =
+     isRange and rangePos <= 0.45 and buyersControl ? "Accumulation" :
+     isRange and rangePos >= 0.55 and sellersControl ? "Distribution" :
+     close >= trendEma and trendSlope > 0 ? "Mark Up" :
+     close <= trendEma and trendSlope < 0 ? "Mark Down" :
+     rangePos <= 0.50 ? "Accumulation" :
+     "Distribution"
+
+wyckoffBias =
+     wyckoffPhase == "Mark Up" ? 2 :
+     wyckoffPhase == "Accumulation" ? 1 :
+     wyckoffPhase == "Mark Down" ? -2 :
+     wyckoffPhase == "Distribution" ? -1 :
+     0
+
+waveRising = wt1 > wt1[1] and wt2 > wt2[1]
+waveFalling = wt1 < wt1[1] and wt2 < wt2[1]
+waveBullControl = wt1 > wt2
+waveBearControl = wt1 < wt2
+
+earlyImpulse = waveBullControl and waveRising and fibNet < 50 and buyersControl
+pullbackWave = waveBearControl and waveFalling and fibNet > 38.2 and fibNet < 61.8 and buyersControl
+expansionWave = waveBullControl and waveRising and adxActiveNow and rvActive and fibNet >= 50 and fibNet < 78.6
+consolidationWave = adx < adxActive and fibNet > 38.2 and fibNet < 61.8
+exhaustionWave = waveBullControl and fibNet >= 78.6 and (bearTurn or bearZone1 or sellersControl)
+abcCorrection = waveBearControl and waveFalling and sellersControl and fibNet < 61.8
+
+elliottPhase =
+     exhaustionWave ? "Wave 5 / Exhaustion" :
+     expansionWave ? "Wave 3 / Expansion" :
+     consolidationWave ? "Wave 4 / Consolidation" :
+     pullbackWave ? "Wave 2 / Pullback" :
+     earlyImpulse ? "Wave 1 / Early Impulse" :
+     abcCorrection ? "ABC Correction" :
+     "Neutral"
+
+elliottBias =
+     elliottPhase == "Wave 1 / Early Impulse" ? 1 :
+     elliottPhase == "Wave 3 / Expansion" ? 2 :
+     elliottPhase == "Wave 5 / Exhaustion" ? -1 :
+     elliottPhase == "ABC Correction" ? -2 :
+     0
+
+dotBias =
+     wtGoldBuy ? 3 :
+     buySignalDiv ? 2 :
+     buySignal ? 1 :
+     sellSignalDiv ? -2 :
+     sellSignal ? -1 :
+     0
+
+waveBias =
+     wt1 > wt2 and wt1 > 0 ? 1 :
+     wt1 > wt2 and wt1 < 0 ? 2 :
+     wt1 < wt2 and wt1 < 0 ? -1 :
+     wt1 < wt2 and wt1 > 0 ? -2 :
+     0
+
+netScore = fibBias + adxBias + relVolBias + wyckoffBias + elliottBias + dotBias + waveBias
+
+rating =
+     netScore >= 5 ? "STRONG BUY" :
+     netScore >= 2 ? "BUY" :
+     netScore <= -5 ? "STRONG SELL" :
+     netScore <= -2 ? "SELL" :
+     "HOLD"
+
+fibNetText = showMatrixValues ? fibZone + " | " + str.tostring(math.round(fibNet)) : fibZone
+
+//-----------------------------------------------------------------------------
+// LEVELS
+//-----------------------------------------------------------------------------
+pZero = plot(0, "Zero", color=color.new(color.white, 65), linewidth=1)
+pOB1 = plot(wtOB1, "WT OB1", color=color.new(colorSellDot, 82), linewidth=1)
+pOB2 = plot(wtOB2, "WT OB2", color=color.new(colorSellDot, 72), linewidth=1)
+pOB3 = plot(wtOB3, "WT OB3", color=color.new(colorRed, 60), linewidth=1)
+
+pOS1 = plot(wtOS1, "WT OS1", color=color.new(colorBuyDot, 82), linewidth=1)
+pOS2 = plot(wtOS2, "WT OS2", color=color.new(colorBuyDot, 72), linewidth=1)
+pOS3 = plot(wtOS3, "WT OS3", color=color.new(colorGold, 65), linewidth=1)
+
+fill(pOB1, pOB3, color=color.new(colorSellDot, 93), title="Overbought Zone Fill")
+fill(pOS1, pOS3, color=color.new(colorBuyDot, 93), title="Oversold Zone Fill")
+
+//-----------------------------------------------------------------------------
+// WAVES
+//-----------------------------------------------------------------------------
+pWT1Body = plot(showWT ? wt1 : na, "WT1 Fill", style=plot.style_area, color=color.new(colorWT1Fill, 48))
+pWT2Body = plot(showWT ? wt2 : na, "WT2 Fill", style=plot.style_area, color=color.new(colorWT2Fill, 62))
+
+pWT1 = plot(showWT ? wt1 : na, "WT1", color=color.rgb(0, 200, 255), linewidth=2)
+pWT2 = plot(showWT ? wt2 : na, "WT2", color=color.rgb(255, 45, 85), linewidth=2)
+
+fillColor = waveDiff >= 0 ? color.new(color.rgb(0, 200, 255), 86) : color.new(color.rgb(255, 45, 85), 86)
+fill(pWT1, pWT2, color=fillColor, title="WT Line Fill")
+
+mfiColor = mfiArea >= 0 ? color.new(colorMFIPos, 80) : color.new(colorMFINeg, 80)
+plot(showMFI ? mfiArea : na, "MFI Area", style=plot.style_area, color=mfiColor)
+
+vwapColor = wtVwap >= 0 ? color.new(colorVWAP, 80) : color.new(colorSellDot, 80)
+plot(wtVwap, "VWAP / Pressure Area", style=plot.style_area, color=vwapColor)
+
+plot(showFastWT ? wt1Raw : na, "Fast WT Raw", color=color.new(color.rgb(0, 200, 255), 35), linewidth=1)
+
+//-----------------------------------------------------------------------------
+// DIVERGENCE LINES
+//-----------------------------------------------------------------------------
+wtBearDivColor = (wtShowDiv and wtBearDiv) or (wtShowHiddenDiv and wtBearDivHiddenFinal) ? colorRed : na
+wtBullDivColor = (wtShowDiv and wtBullDiv) or (wtShowHiddenDiv and wtBullDivHiddenFinal) ? colorGreen : na
+
+wtBearDivColorAdd = (wtShowDiv and wtDivAddShow and wtBearDivAdd) or (wtShowHiddenDiv and wtDivAddShow and wtBearDivHiddenAdd) ? color.new(colorRed, 60) : na
+wtBullDivColorAdd = (wtShowDiv and wtDivAddShow and wtBullDivAdd) or (wtShowHiddenDiv and wtDivAddShow and wtBullDivHiddenAdd) ? color.new(colorGreen, 60) : na
+
+plot(wtFractalTop ? wt2[2] : na, title="WT Bearish Divergence", color=wtBearDivColor, linewidth=2, offset=-2)
+plot(wtFractalBot ? wt2[2] : na, title="WT Bullish Divergence", color=wtBullDivColor, linewidth=2, offset=-2)
+plot(wtFractalTopAdd ? wt2[2] : na, title="WT 2nd Bearish Divergence", color=wtBearDivColorAdd, linewidth=2, offset=-2)
+plot(wtFractalBotAdd ? wt2[2] : na, title="WT 2nd Bullish Divergence", color=wtBullDivColorAdd, linewidth=2, offset=-2)
+
+//-----------------------------------------------------------------------------
+// OUTER-EDGE DOT POSITIONS
+//-----------------------------------------------------------------------------
+waveTopForDots = math.max(wt1, wt2)
+waveBotForDots = math.min(wt1, wt2)
+
+buyDotY = math.min(-107.0, waveBotForDots - 10.0)
+sellDotY = math.max(105.0, waveTopForDots + 10.0)
+buyDivDotY = math.min(-106.0, waveBotForDots - 18.0)
+sellDivDotY = math.max(106.0, waveTopForDots + 18.0)
+goldDotY = math.min(-114.0, waveBotForDots - 26.0)
+hiddenBullY = math.min(-122.0, waveBotForDots - 34.0)
+hiddenBearY = math.max(122.0, waveTopForDots + 34.0)
+
+crossOuterY =
+     wtCrossUp ?
+     math.min(wt2, waveBotForDots - 7.5) :
+     math.max(wt2, waveTopForDots + 7.5)
+
+//-----------------------------------------------------------------------------
+// DOTS ON INDICATOR
+//-----------------------------------------------------------------------------
+plot(wtCross and showFastWT ? crossOuterY : na, title="Small WT Cross Dot", color=color.new(crossDotColor, 15), style=plot.style_circles, linewidth=3)
+
+plotchar(showBuyDots and buySignal ? buyDotY : na, title="Green Buy Dot", char="·", color=color.new(colorBuyDot, 20), location=location.absolute, size=size.small)
+plotchar(showSellDots and sellSignal ? sellDotY : na, title="Red Sell Dot", char="·", color=color.new(colorSellDot, 20), location=location.absolute, size=size.small)
+
+plotchar(showDivDots and buySignalDiv ? buyDivDotY : na, title="Bullish Divergence Dot", char="•", color=buySignalDivColor, location=location.absolute, size=size.small, offset=-2)
+plotchar(showDivDots and sellSignalDiv ? sellDivDotY : na, title="Bearish Divergence Dot", char="•", color=sellSignalDivColor, location=location.absolute, size=size.small, offset=-2)
+
+plotchar(showGoldDots and wtGoldBuy ? goldDotY : na, title="Gold Buy Dot", char="•", color=colorGold, location=location.absolute, size=size.normal, offset=-2)
+
+plotchar(hiddenBullDivActive ? hiddenBullY : na, title="Hidden Bullish Div Dot", char="◆", color=colorHiddenDiv, location=location.absolute, size=size.tiny, offset=-2)
+plotchar(hiddenBearDivActive ? hiddenBearY : na, title="Hidden Bearish Div Dot", char="◆", color=colorHiddenDiv, location=location.absolute, size=size.tiny, offset=-2)
+
+//-----------------------------------------------------------------------------
+// STANDARD TRADINGVIEW ALERT CONDITIONS
+//-----------------------------------------------------------------------------
+// Use these instead of Any alert() function call.
+// These allow you to choose specific alerts in TradingView:
+// Green Buy Dot, Red Sell Dot, Gold Buy Dot, Bullish Divergence Dot,
+// Bearish Divergence Dot, Buy Rating, Sell Rating, etc.
+//-----------------------------------------------------------------------------
+
+alertcondition(
+     buySignal,
+     title="Green Buy Dot",
+     message="Owners Matrix Pro Dots: Green buy dot on {{ticker}} {{interval}}"
+)
+
+alertcondition(
+     sellSignal,
+     title="Red Sell Dot",
+     message="Owners Matrix Pro Dots: Red sell dot on {{ticker}} {{interval}}"
+)
+
+alertcondition(
+     wtGoldBuy,
+     title="Gold Buy Dot",
+     message="Owners Matrix Pro Dots: Gold buy dot on {{ticker}} {{interval}}"
+)
+
+alertcondition(
+     buySignalDiv,
+     title="Bullish Divergence Dot",
+     message="Owners Matrix Pro Dots: Bullish divergence dot on {{ticker}} {{interval}}"
+)
+
+alertcondition(
+     sellSignalDiv,
+     title="Bearish Divergence Dot",
+     message="Owners Matrix Pro Dots: Bearish divergence dot on {{ticker}} {{interval}}"
+)
+
+alertcondition(
+     hiddenBullDivActive,
+     title="Hidden Bullish Divergence Dot",
+     message="Owners Matrix Pro Dots: hidden bullish divergence dot on {{ticker}} {{interval}}"
+)
+
+alertcondition(
+     hiddenBearDivActive,
+     title="Hidden Bearish Divergence Dot",
+     message="Owners Matrix Pro Dots: hidden bearish divergence dot on {{ticker}} {{interval}}"
+)
+
+alertcondition(
+     rating == "BUY",
+     title="OM Buy Rating",
+     message="Owners Matrix Pro Dots: BUY rating on {{ticker}} {{interval}}"
+)
+
+alertcondition(
+     rating == "STRONG BUY",
+     title="OM Strong Buy Rating",
+     message="Owners Matrix Pro Dots: STRONG BUY rating on {{ticker}} {{interval}}"
+)
+
+alertcondition(
+     rating == "SELL",
+     title="OM Sell Rating",
+     message="Owners Matrix Pro Dots: SELL rating on {{ticker}} {{interval}}"
+)
+
+alertcondition(
+     rating == "STRONG SELL",
+     title="OM Strong Sell Rating",
+     message="Owners Matrix Pro Dots: STRONG SELL rating on {{ticker}} {{interval}}"
+)
+
+//-----------------------------------------------------------------------------
+// 1-MINUTE CRYPTO LIST GREEN / RED DOT ALERTCONDITIONS
+//-----------------------------------------------------------------------------
+// Use this for TradingView list alerts.
+// This does NOT use alert(), so do NOT choose "Any alert() function call".
+// Choose the specific conditions below:
+//   - 1M Crypto Green Dot Alert
+//   - 1M Crypto Red Dot Alert
+//-----------------------------------------------------------------------------
+
+groupCrypto1mAlerts = "1M CRYPTO LIST ALERTCONDITIONS"
+
+enableCrypto1mAlerts = input.bool(true, "Enable 1M Crypto List Alerts", group=groupCrypto1mAlerts)
+
+// Optional test mode.
+// Turn ON only to confirm TradingView list alerts are triggering.
+// Turn OFF after testing.
+testCrypto1mConditions = input.bool(false, "TEST 1M Conditions", group=groupCrypto1mAlerts)
+
+// Only allow these conditions on the 1-minute chart/list alert.
+isCrypto1mChart = timeframe.period == "1"
+
+// Green dot family:
+// normal green buy dot + bullish divergence dot + hidden bullish divergence dot.
+crypto1mGreenDot =
+     enableCrypto1mAlerts and
+     isCrypto1mChart and
+     (
+         buySignal or
+         buySignalDiv or
+         hiddenBullDivActive or
+         testCrypto1mConditions
+     )
+
+// Red dot family:
+// normal red sell dot + bearish divergence dot + hidden bearish divergence dot.
+crypto1mRedDot =
+     enableCrypto1mAlerts and
+     isCrypto1mChart and
+     (
+         sellSignal or
+         sellSignalDiv or
+         hiddenBearDivActive or
+         testCrypto1mConditions
+     )
+
+alertcondition(
+     crypto1mGreenDot,
+     title="1M Crypto Green Dot Alert",
+     message="1M Crypto Green Dot Alert on {{ticker}}"
+)
+
+alertcondition(
+     crypto1mRedDot,
+     title="1M Crypto Red Dot Alert",
+     message="1M Crypto Red Dot Alert on {{ticker}}"
+)
+
+//-----------------------------------------------------------------------------
+// OWNERS MATRIX TABLE
+//-----------------------------------------------------------------------------
+var table matrixTable = table.new(f_pos(matrixPosition), 2, 11, border_width=1, frame_width=1, border_color=color.white)
+
+if showMatrixBox and barstate.islast
+    headerBg = color.rgb(55, 60, 70)
+    labelBg = color.rgb(18, 22, 30)
+    dotRowSize = size.normal
+    subDotRowSize = size.small
+
+    table.cell(matrixTable, 0, 0, "OM DOTS", text_color=color.white, bgcolor=headerBg, text_size=size.normal)
+    table.cell(matrixTable, 1, 0, "READ", text_color=color.yellow, bgcolor=headerBg, text_size=size.normal)
+
+    table.cell(matrixTable, 0, 1, "Fib / Net", text_color=color.white, bgcolor=labelBg, text_size=size.normal)
+    table.cell(matrixTable, 1, 1, fibNetText, text_color=color.white, bgcolor=f_bgState(fibBias > 0, fibBias < 0), text_size=size.normal)
+
+    table.cell(matrixTable, 0, 2, "ADX / Control", text_color=color.white, bgcolor=labelBg, text_size=size.normal)
+    table.cell(matrixTable, 1, 2, adxText, text_color=color.white, bgcolor=f_bgState(buyersControl, sellersControl), text_size=size.normal)
+
+    table.cell(matrixTable, 0, 3, "Rel Vol", text_color=color.white, bgcolor=labelBg, text_size=size.normal)
+    table.cell(matrixTable, 1, 3, relVolText, text_color=rvStrong ? color.black : color.white, bgcolor=rvStrong ? colorGold : rvActive ? color.rgb(0, 200, 120) : color.rgb(80, 84, 92), text_size=size.normal)
+
+    table.cell(matrixTable, 0, 4, "Wyckoff", text_color=color.white, bgcolor=labelBg, text_size=size.normal)
+    table.cell(matrixTable, 1, 4, wyckoffPhase, text_color=color.white, bgcolor=f_phaseBg(wyckoffPhase), text_size=size.normal)
+
+    table.cell(matrixTable, 0, 5, "Elliott", text_color=color.white, bgcolor=labelBg, text_size=size.normal)
+    table.cell(matrixTable, 1, 5, elliottPhase, text_color=color.white, bgcolor=f_elliottBg(elliottPhase), text_size=size.normal)
+
+    table.cell(matrixTable, 0, 6, "Rating", text_color=color.white, bgcolor=labelBg, text_size=size.normal)
+    table.cell(matrixTable, 1, 6, rating, text_color=f_ratingTxt(rating), bgcolor=f_ratingBg(rating), text_size=size.normal)
+
+    if showDotForecast and dotForecastView != "Off" and dotForecastDisplay == "Compact"
+        table.cell(matrixTable, 0, 7, "Dot Cycle", text_color=color.white, bgcolor=labelBg, text_size=dotRowSize)
+        table.cell(matrixTable, 1, 7, compactDotCycleText, text_color=f_cycleTxt(compactDotState), bgcolor=f_cycleBg(compactDotState), text_size=dotRowSize)
+
+        table.cell(matrixTable, 0, 8, "Next Watch", text_color=color.white, bgcolor=labelBg, text_size=dotRowSize)
+        table.cell(matrixTable, 1, 8, nextDotWatchText, text_color=f_watchTxt(nextDotWatchState), bgcolor=f_watchBg(nextDotWatchState), text_size=dotRowSize)
+
+        table.cell(matrixTable, 0, 9, "Daily", text_color=color.white, bgcolor=color.rgb(40, 44, 52), text_size=subDotRowSize)
+        table.cell(matrixTable, 1, 9, showDailyForecast ? dailyDotCycleText : "Hidden", text_color=showDailyForecast ? f_cycleTxt(dDotState) : color.white, bgcolor=showDailyForecast ? f_cycleBg(dDotState) : color.rgb(40, 44, 52), text_size=subDotRowSize)
+
+        table.cell(matrixTable, 0, 10, "Month End", text_color=color.white, bgcolor=color.rgb(40, 44, 52), text_size=subDotRowSize)
+        table.cell(matrixTable, 1, 10, monthEndWindow ? "Active window" : "Normal window", text_color=color.white, bgcolor=monthEndWindow ? color.rgb(255, 215, 0) : color.rgb(80, 84, 92), text_size=subDotRowSize)
+
+    if showDotForecast and dotForecastView != "Off" and dotForecastDisplay == "Expanded"
+        table.cell(matrixTable, 0, 7, "Daily Cycle", text_color=color.white, bgcolor=labelBg, text_size=dotRowSize)
+        table.cell(matrixTable, 1, 7, showDailyForecast ? dailyDotCycleText : "Hidden", text_color=showDailyForecast ? f_cycleTxt(dDotState) : color.white, bgcolor=showDailyForecast ? f_cycleBg(dDotState) : color.rgb(40, 44, 52), text_size=dotRowSize)
+
+        table.cell(matrixTable, 0, 8, "Weekly Cycle", text_color=color.white, bgcolor=labelBg, text_size=dotRowSize)
+        table.cell(matrixTable, 1, 8, showWeeklyForecast ? weeklyDotCycleText : "Hidden", text_color=showWeeklyForecast ? f_cycleTxt(wDotState) : color.white, bgcolor=showWeeklyForecast ? f_cycleBg(wDotState) : color.rgb(40, 44, 52), text_size=dotRowSize)
+
+        table.cell(matrixTable, 0, 9, "Monthly Cycle", text_color=color.white, bgcolor=labelBg, text_size=dotRowSize)
+        table.cell(matrixTable, 1, 9, showMonthlyForecast ? monthlyDotCycleText : "Hidden", text_color=showMonthlyForecast ? f_cycleTxt(mDotState) : color.white, bgcolor=showMonthlyForecast ? f_cycleBg(mDotState) : color.rgb(40, 44, 52), text_size=dotRowSize)
+
+        table.cell(matrixTable, 0, 10, "Next Watch", text_color=color.white, bgcolor=labelBg, text_size=dotRowSize)
+        table.cell(matrixTable, 1, 10, nextDotWatchText, text_color=f_watchTxt(nextDotWatchState), bgcolor=f_watchBg(nextDotWatchState), text_size=dotRowSize)
+
+if not showMatrixBox and barstate.islast
+    table.clear(matrixTable, 0, 0, 1, 10)
+
+// ===== QUALIFIED DOT OVERLAY (Phase 1, additive) =====
+grpQ          = "① Qualified Dot Overlay"
+showQualified = input.bool(true, "Show Qualified Dots", group=grpQ)
+
+grpL     = "② Gamma Levels (manual, ES)"
+lvlZG    = input.float(0.0, "Zero Gamma",     group=grpL)
+lvlVT    = input.float(0.0, "Vol Trigger",    group=grpL)
+lvlCW    = input.float(0.0, "Call Wall",      group=grpL)
+lvlPW    = input.float(0.0, "Put Wall",       group=grpL)
+lvlAG    = input.float(0.0, "Absolute Gamma", group=grpL)
+lvlEMH   = input.float(0.0, "EM High",        group=grpL)
+lvlEML   = input.float(0.0, "EM Low",         group=grpL)
+lvlEMC   = input.float(0.0, "EM Center",      group=grpL)
+levelTol = input.float(3.0, "Level tolerance (ES pts)", minval=0.0, step=0.25, group=grpL)
+
+grpR         = "③ Regime"
+gammaRegime  = input.string("Positive", "Net Gamma Regime", options=["Positive","Negative"], group=grpR)
+allowCTinNeg = input.bool(false, "Allow counter-trend dots in Negative gamma", group=grpR)
+
+grpS       = "④ Session"
+useSession = input.bool(true, "Gate by session window", group=grpS)
+sessStr    = input.session("0935-1600", "Qualified session (ET)", group=grpS)
+sessTZ     = "America/New_York"
+inSession  = not useSession or not na(time(timeframe.period, sessStr, sessTZ))
+
+f_near(_lvl) => _lvl != 0.0 and math.abs(close - _lvl) <= levelTol
+atLevel = f_near(lvlZG) or f_near(lvlVT) or f_near(lvlCW) or f_near(lvlPW) or f_near(lvlAG) or f_near(lvlEMH) or f_near(lvlEML) or f_near(lvlEMC)
+
+regimeOK = gammaRegime == "Positive" or allowCTinNeg
+
+qualBuy  = showQualified and buySignal  and atLevel and regimeOK and inSession
+qualSell = showQualified and sellSignal and atLevel and regimeOK and inSession
+
+plotchar(qualBuy,  title="Qualified Buy Dot",  char="▲", location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
+plotchar(qualSell, title="Qualified Sell Dot", char="▼", location=location.abovebar, color=color.new(color.red,  0), size=size.small)
+
+alertcondition(qualBuy,  title="OM Qualified BUY Dot",  message="OM Qualified BUY on {{ticker}} {{interval}}")
+alertcondition(qualSell, title="OM Qualified SELL Dot", message="OM Qualified SELL on {{ticker}} {{interval}}")
+// ===== END QUALIFIED DOT OVERLAY =====
